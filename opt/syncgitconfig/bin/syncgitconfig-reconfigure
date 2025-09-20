@@ -1,0 +1,22 @@
+#!/usr/bin/env bash
+# syncgitconfig-reconfigure — refresca credenciales/remoto y reinicia watcher
+set -euo pipefail
+umask 022
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+. "$SCRIPT_DIR/../lib/common.sh"
+
+main() {
+  load_config_yaml "$CONF_PATH"
+  ensure_git_repo_ready "$CFG_repo_path" "$CFG_remote_url" "$AUTH_token_file"
+
+  # Si hay token_inline, migrarlo de nuevo (por si se actualiza)
+  if [[ -n "$AUTH_token_inline" && "$AUTH_token_inline" != "REDACTED" ]]; then
+    "$SCRIPT_DIR/syncgitconfig-install"
+  fi
+
+  systemctl restart syncgitconfig-watch.service || true
+  ok "Reconfiguración aplicada."
+}
+
+main "$@"

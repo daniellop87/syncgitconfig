@@ -1,0 +1,120 @@
+#!/usr/bin/env bash
+# syncgitconfig-install — bootstrap/instalación y primera ejecución
+set -euo pipefail
+umask 022
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# shellcheck source=/opt/syncgitconfig/lib/common.sh
+. "$SCRIPT_DIR/../lib/common.sh"
+
+install_pkgs_if_possible() {
+  # Intenta instalar lo básico si hay gestor de paquetes disponible
+  if command -v apt-get >/dev/null 2>&1; then
+    apt-get update -y || true
+    DEBIAN_FRONTEND=noninteractive apt-get install -y git rsync inotify-tools ca-certificates || true
+  elif command -v dnf >/dev/null 2>&1; then
+    dnf install -y git rsync inotify-tools ca-certificates || true
+  elif command -v yum >/dev/null 2>&1; then
+    yum install -y git rsync inotify-tools ca-certificates || true
+  elif command -v zypper >/dev/null 2>&1; then
+    zypper --non-interactive install git rsync inotify-tools ca-certificates || true
+  fi
+}
+
+ensure_units_present() {
+  # Deja plantillas mínimas si faltan (por si no se desplegaron con Ansible)
+  local svc1="/etc/systemd/system/syncgitconfig.service"
+  local svc2="/etc/systemd/system/syncgitconfig-watch.service"
+  if [[ ! -f "$svc1" ]]; then
+cat > "$svc1" <<'UNIT'
+[Unit]
+Description=syncgitconfig one-shot run
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+ExecStart=/opt/syncgitconfig/bin/syncgitconfig-run
+
+[Install]
+WantedBy=multi-user.target
+UNIT
+  fi
+  if [[ ! -f "$svc2" ]]; then
+cat > "$svc2" <<'UNIT'
+[Unit]
+Description=syncgitconfig watcher (inotify)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+ExecStart=/opt/syncgitconfig/bin/syncgitconfig-watch
+Restart=always
+RestartSec=5
+User=root
+
+[Install]
+WantedBy=multi-user.target
+UNIT
+  fi
+}
+
+migrate_token_inline_to_credentials() {
+  # Si token_inline existe en YAML, construye entrada en token_file y lo "redacta" del YAML
+  if [[ -n "$AUTH_token_inline" ]]; then
+    [[ -n "$AUTH_username" ]] || AUTH_username="token"
+    [[ -n "$AUTH_token_file" ]] || AUTH_token_file="/etc/syncgitconfig/credentials/.git-credentials"
+    mkdir -p "$(dirname "$AUTH_token_file")"; chmod 700 "$(dirname "$AUTH_token_file")" || true
+
+    # De remote_url sacamos host y path (manteniendo https://)
+    local url="$CFG_remote_url"
+    if [[ "$url" != https://* ]]; then
+      err "remote_url no es https:// — revisa config"; exit 1
+    fi
+    local proto="https://"
+    local rest="${url#https://}"          # gitea.example/ORG/repo.git
+    # Escribimos línea de credenciales
+    echo "https://${AUTH_username}:${AUTH_token_inline}@${rest}" > "$AUTH_token_file"
+    chmod 600 "$AUTH_token_file"
+
+    # Configura git-credential-store para usar ese fichero en el repo (luego al clonar lo usaremos)
+    git config --global credential.helper "store --file=$AUTH_token_file" || true
+
+    # Redacta token_inline del YAML (sustituye su valor por ***)
+    sed -i 's/^\(\s*token_inline:\s*\).*/\1"REDACTED"/' "$CONF_PATH" || true
+    ok "Token migrado a $AUTH_token_file y redactado en YAML."
+  fi
+}
+
+clone_repo_if_missing() {
+  local rp="$CFG_repo_path" url="$CFG_remote_url"
+  mkdir -p "$rp"
+  if [[ ! -d "$rp/.git" ]]; then
+    log "Clonando repo $url en $rp"
+    git clone "$url" "$rp"
+  fi
+  ok "Repo listo en $rp"
+}
+
+main() {
+  require_cmd bash sed awk grep install || exit 1
+  install_pkgs_if_possible
+  require_cmd git rsync inotifywait || { err "Instala git rsync inotify-tools"; exit 1; }
+
+  load_config_yaml "$CONF_PATH"
+
+  migrate_token_inline_to_credentials
+  clone_repo_if_missing
+
+  ensure_units_present
+  systemctl daemon-reload || true
+  systemctl enable --now syncgitconfig-watch.service || true
+
+  # Primera pasada manual
+  /opt/syncgitconfig/bin/syncgitconfig-run || true
+
+  ok "Instalación completada."
+}
+
+main "$@"

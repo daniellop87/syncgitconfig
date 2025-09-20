@@ -1,0 +1,40 @@
+#!/usr/bin/env bash
+# syncgitconfig-status — estado actual (salud rápida)
+set -euo pipefail
+umask 022
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+. "$SCRIPT_DIR/../lib/common.sh"
+
+main() {
+  load_config_yaml "$CONF_PATH"
+
+  echo "== syncgitconfig status =="
+  echo "Config: $CONF_PATH"
+  echo "Repo:   $CFG_repo_path"
+  echo "Remote: $CFG_remote_url"
+  echo "Env:    $CFG_env"
+  echo "Host:   $CFG_host"
+  echo "Staging:$CFG_staging_path/$CFG_host"
+  echo "Cooldown: ${CFG_cooldown_seconds}s"
+  echo "Apps:   ${#APP_NAMES[@]}"
+
+  echo
+  echo "-- Últimas 10 líneas del log --"
+  tail -n 10 "$LOG_FILE" 2>/dev/null || true
+
+  echo
+  echo "-- Estado Git --"
+  if [[ -d "$CFG_repo_path/.git" ]]; then
+    git -C "$CFG_repo_path" status --porcelain
+    echo
+    git -C "$CFG_repo_path" log -1 --pretty='format:%h %ci %s' || true
+  else
+    echo "Repo no inicializado."
+  fi
+
+  echo
+  systemctl is-active --quiet syncgitconfig-watch.service && echo "Watcher: active" || echo "Watcher: inactive"
+}
+
+main "$@"

@@ -1,0 +1,41 @@
+#!/usr/bin/env bash
+# syncgitconfig-watch — vigila rutas con inotify y dispara run con cooldown
+set -euo pipefail
+umask 022
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# shellcheck source=/opt/syncgitconfig/lib/common.sh
+. "$SCRIPT_DIR/../lib/common.sh"
+
+main() {
+  require_cmd inotifywait || exit 1
+  load_config_yaml "$CONF_PATH"
+
+  # Construye el conjunto de paths a vigilar (directorio para dir; dirname para file)
+  declare -A WATCH=()
+  for ((s=0; s<${#SRC_APPIDX[@]}; s++)); do
+    local src="${SRC_PATHS[$s]}" typ="${SRC_TYPES[$s]}"
+    if [[ "$typ" == "dir" ]]; then
+      [[ -d "$src" ]] && WATCH["$src"]=1
+    else
+      local pdir; pdir="$(dirname "$src")"
+      [[ -d "$pdir" ]] && WATCH["$pdir"]=1
+    fi
+  done
+
+  if ((${#WATCH[@]}==0)); then
+    err "No hay rutas válidas para vigilar. Revisa $CONF_PATH"
+    exit 1
+  fi
+
+  local -a paths=("${!WATCH[@]}")
+  log "Watcher escuchando en: ${paths[*]} (cooldown ${CFG_cooldown_seconds}s)"
+
+  local EVENTS="close_write,move,create,delete,attrib"
+  inotifywait -m -r -q -e "$EVENTS" --format '%w%f %e' "${paths[@]}" | while read -r _line; do
+    # No ejecutamos cooldown aquí; lo gestiona el run
+    /opt/syncgitconfig/bin/syncgitconfig-run || true
+  done
+}
+
+main "$@"

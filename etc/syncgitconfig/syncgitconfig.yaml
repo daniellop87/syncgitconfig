@@ -1,0 +1,50 @@
+# === Núcleo ===
+repo_path: /opt/configs-host                  # checkout local del repo de ESTE servidor
+remote_url: https://gitea.example.local/ORG/configs-host.git
+env: prod
+host: auto                                    # o un FQDN fijo como "host01.example.local"
+staging_path: /var/lib/syncgitconfig/staging
+cooldown_seconds: 60
+
+# === Autenticación (HTTPS + token) ===
+auth:
+  method: https_token
+  username: syncgit-bot
+  # Opción A (recomendada): indicar el fichero de credenciales (git-credential-store)
+  token_file: /etc/syncgitconfig/credentials/.git-credentials
+  # Opción B (bootstrap rápido): PON TEMPORALMENTE EL TOKEN AQUÍ y el instalador lo migrará
+  # token_inline: "PON_AQUI_TU_TOKEN_Y_LUEGO_SE_BORRA"
+
+# === Exclusiones globales ===
+exclude:
+  - "*.key"
+  - "*.pem"
+  - "id_*"
+  - "secrets/**"
+  - "*.p12"
+  - "*.jks"
+  - "*.srl"
+
+# === Modelo por aplicación ===
+apps:
+  - name: systemd
+    dest: "apps/systemd"
+    sources:
+      - path: "/etc/systemd/system"
+        type: dir
+        strip_prefix: "/etc/systemd/system"
+
+  # Ejemplos para activar cuando quieras:
+  # - name: ssh
+  #   dest: "apps/ssh"
+  #   sources:
+  #     - path: "/etc/ssh/sshd_config"
+  #       type: file
+  #       strip_prefix: "/etc/ssh"
+
+  # - name: monitoring
+  #   dest: "apps/monitoring"
+  #   sources:
+  #     - path: "/etc/nagios"
+  #       type: dir
+  #       strip_prefix: "/etc/nagios"

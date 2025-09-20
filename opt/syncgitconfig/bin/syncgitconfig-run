@@ -1,0 +1,89 @@
+#!/usr/bin/env bash
+# syncgitconfig-run — ejecuta una pasada: YAML → staging → repo → commit/push
+set -euo pipefail
+umask 022
+
+# Carga comunes
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# shellcheck source=/opt/syncgitconfig/lib/common.sh
+. "$SCRIPT_DIR/../lib/common.sh"
+
+main() {
+  require_cmd rsync git install || exit 1
+  load_config_yaml "$CONF_PATH"
+
+  acquire_lock_or_exit
+  respect_cooldown_or_exit
+
+  ensure_git_repo_ready "$CFG_repo_path" "$CFG_remote_url" "$AUTH_token_file"
+
+  local STAGING_ROOT="$CFG_staging_path/$CFG_host"
+  local REPO_HOST_ROOT="$CFG_repo_path/envs/$CFG_env/hosts/$CFG_host"
+  mkdir -p "$STAGING_ROOT" "$REPO_HOST_ROOT"
+
+  local -a RSYNC_FLAGS; RSYNC_FLAGS=(-a --delete --itemize-changes)
+  local -a EXCL; read -r -a EXCL <<<"$(rsync_exclude_flags)"
+
+  log "=== RUN $CFG_host ($CFG_env) ==="
+  log "Staging: $STAGING_ROOT"
+  log "Repo:    $REPO_HOST_ROOT"
+
+  # Limpia staging de apps (no borra staging root)
+  mkdir -p "$STAGING_ROOT"
+  # No borramos todo staging para permitir apps múltiples: rsync sobre cada destino
+
+  # Recorre apps y sus sources
+  for ((i=0; i<${#APP_NAMES[@]}; i++)); do
+    local app="${APP_NAMES[$i]}" dest="${APP_DESTS[$i]}"
+    [[ -z "$dest" ]] && dest="apps/$app"
+    local staged_app_root="$STAGING_ROOT/$dest"
+    mkdir -p "$staged_app_root"
+
+    # Fuentes de esta app
+    for ((s=0; s<${#SRC_APPIDX[@]}; s++)); do
+      if (( SRC_APPIDX[$s] == i )); then
+        local src="${SRC_PATHS[$s]}" typ="${SRC_TYPES[$s]}" strip="${SRC_STRIPS[$s]}"
+        [[ -z "$strip" ]] && strip="$src"  # por defecto, recorta todo el prefijo del propio src
+
+        if [[ "$typ" == "dir" ]]; then
+          if [[ -d "$src" ]]; then
+            # Calcula la subruta relativa respecto a strip_prefix
+            local rel="/"
+            if [[ "$src" == "$strip"* ]]; then
+              rel="${src#"$strip"}"; [[ "$rel" == "/" ]] && rel=""
+            fi
+            local tgt="$staged_app_root/$rel"
+            mkdir -p "$tgt"
+            log "DIR: $src -> $dest/$rel"
+            rsync "${RSYNC_FLAGS[@]}" "${EXCL[@]}" "$src/" "$tgt/" | tee -a "$LOG_FILE" || true
+          else
+            warn "Directorio no existe: $src"
+          fi
+        elif [[ "$typ" == "file" ]]; then
+          if [[ -f "$src" ]]; then
+            local rel="${src#"$strip"}"; rel="${rel#/}"   # quita leading /
+            local tgt="$staged_app_root/$rel"
+            log "FILE: $src -> $dest/$rel"
+            install -D -m 0644 "$src" "$tgt"
+          else
+            warn "Fichero no existe: $src"
+          fi
+        else
+          warn "Tipo de source desconocido '$typ' en app '$app'"
+        fi
+      fi
+    done
+  done
+
+  # Staging -> Repo
+  log "Sync STAGING -> REPO"
+  rsync "${RSYNC_FLAGS[@]}" "${EXCL[@]}" "$STAGING_ROOT/" "$REPO_HOST_ROOT/" | tee -a "$LOG_FILE" || true
+
+  # Commit/push (commit único; el mensaje incluye host y env)
+  git_commit_and_push "$CFG_repo_path" "$REPO_HOST_ROOT" "$CFG_env" "$CFG_host"
+
+  ok "RUN completado."
+  log "=== END $CFG_host ==="
+}
+
+main "$@"

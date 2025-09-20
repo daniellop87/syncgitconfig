@@ -1,0 +1,22 @@
+#!/usr/bin/env bash
+# syncgitconfig-uninstall — detiene servicios y opcionalmente limpia estado/logs
+set -euo pipefail
+umask 022
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+. "$SCRIPT_DIR/../lib/common.sh"
+
+main() {
+  systemctl disable --now syncgitconfig-watch.service 2>/dev/null || true
+  systemctl disable --now syncgitconfig.service 2>/dev/null || true
+  read -r -p "¿Borrar estado en $STATE_DIR y logs en $LOG_DIR? [y/N] " ans
+  if [[ "${ans:-N}" =~ ^[yY]$ ]]; then
+    rm -rf "$STATE_DIR" "$LOG_DIR"
+    echo "Eliminado."
+  else
+    echo "Conservado."
+  fi
+  echo "Repo y config no se tocan."
+}
+
+main "$@"

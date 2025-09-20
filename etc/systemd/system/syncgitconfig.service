@@ -1,0 +1,11 @@
+[Unit]
+Description=syncgitconfig one-shot run
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+ExecStart=/opt/syncgitconfig/bin/syncgitconfig-run
+
+[Install]
+WantedBy=multi-user.target
