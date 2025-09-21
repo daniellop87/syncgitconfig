@@ -1,9 +1,9 @@
 # syncgitconfig
 
-Backup **granular** de configuraciones por **servidor** usando **Git** (HTTPS + token), con staging local y **watcher** basado en `inotify` para disparar commits automáticamente cuando hay cambios.
+Backup **granular** de configuraciones por **servidor** usando **Git** (HTTPS con token/`.netrc` o SSH con deploy key), con staging local y **watcher** basado en `inotify` para disparar commits automáticamente cuando hay cambios.
 
 * **Modelo por host**: 1 repositorio por servidor (p. ej. `configs-n8n`, `configs-web01`).
-* **Modelo por app**: agrupas rutas como “apps” (systemd, ssh, monitoring, …).
+* **Modelo por app**: agrupas rutas como “apps” (systemd, ssh, monitoring, …) declaradas por entorno/host.
 * **Seguro**: excluyes secretos; token con permisos mínimos; sin `.git` en `/etc`.
 * **Automático**: watcher + cooldown (60 s) para evitar tormentas de commits.
 
@@ -15,7 +15,7 @@ Backup **granular** de configuraciones por **servidor** usando **Git** (HTTPS + 
 * [Arquitectura y rutas](#arquitectura-y-rutas)
 * [Instalación rápida (recomendada)](#instalación-rápida-recomendada)
 * [Configuración (`syncgitconfig.yaml`)](#configuración-syncgitconfigyaml)
-* [Autenticación (HTTPS + token)](#autenticación-https--token)
+* [Autenticación (HTTPS/SSH)](#autenticación-httpsssh)
 * [Servicios systemd](#servicios-systemd)
 * [Estructura del repo por servidor](#estructura-del-repo-por-servidor)
 * [Operativa habitual](#operativa-habitual)
@@ -38,7 +38,7 @@ Backup **granular** de configuraciones por **servidor** usando **Git** (HTTPS + 
 > ```
 
 **Acceso al remoto Git**
-Salida a `https://` del servidor Git (Gitea/GitLab/GitHub Enterprise).
+Salida a `https://` o `ssh://`/`git@` del servidor Git (Gitea/GitLab/GitHub Enterprise).
 
 ---
 
@@ -56,7 +56,7 @@ Staging y commit:
 (origenes /etc/... )
    → /var/lib/syncgitconfig/staging/<host>/apps/<app>/… 
    → /opt/configs-host/envs/<env>/hosts/<host>/apps/<app>/…
-   → git add / commit / push (HTTPS + token)
+   → git add / commit / push (HTTPS o SSH según `auth.method`)
 ```
 
 ---
@@ -107,19 +107,34 @@ host: auto
 staging_path: /var/lib/syncgitconfig/staging
 cooldown_seconds: 60
 
-watch_paths:
-  - "/etc/systemd/system"
-  # - "/var/www/phpipam"
+environments:
+  prod:
+    hosts:
+      auto:
+        apps:
+          systemd:
+            paths:
+              - /etc/systemd/system
+          # phpipam:
+          #   paths:
+          #     - /var/www/phpipam
+
+# watch_paths:
+#   - "/etc/systemd/system"
 
 # paths:
 #   - "/etc/systemd/system"
-#   - "/var/www/phpipam"
 
 auth:
   method: https_token
   username: syncgit-bot
   token_file: /etc/syncgitconfig/credentials/.git-credentials
   # token_inline: "OPCIONAL: el instalador lo migrará y lo borrará de aquí"
+  # method: https_netrc
+  # netrc_file: /root/.netrc
+  # method: ssh
+  # ssh_key_path: /root/.ssh/id_ed25519
+  # ssh_known_hosts: /etc/ssh/ssh_known_hosts
 
 exclude:
   - "*.key"
@@ -130,53 +145,39 @@ exclude:
   - "*.jks"
   - "*.srl"
 
-apps:
-  - name: systemd
-    dest: "apps/systemd"
-    sources:
-      - path: "/etc/systemd/system"
-        type: dir
-        strip_prefix: "/etc/systemd/system"
-
-  # - name: ssh
-  #   dest: "apps/ssh"
-  #   sources:
-  #     - path: "/etc/ssh/sshd_config"
-  #       type: file
-  #       strip_prefix: "/etc/ssh"
-
-  # - name: monitoring
-  #   dest: "apps/monitoring"
-  #   sources:
-  #     - path: "/etc/nagios"
-  #       type: dir
-  #       strip_prefix: "/etc/nagios"
+# apps:
+#   - name: systemd
+#     dest: "apps/systemd"
+#     sources:
+#       - path: "/etc/systemd/system"
+#         type: dir
+#         strip_prefix: "/etc/systemd/system"
 ```
 
-* `paths` sirve para listar rutas simples a snapshot sin definir apps (se copian bajo `paths/`).
+* `environments.<env>.hosts.<host>.apps.<app>.paths` agrupa rutas bajo `apps/<app>` automáticamente.
 * `watch_paths` indica qué rutas vigilar; si no se define se derivan de `paths`/`apps`.
-* `apps[]` permite **carpetas completas** (`type: dir`) o **archivos sueltos** (`type: file`).
-* `strip_prefix` **recorta** el prefijo del origen para dejar una jerarquía limpia bajo `dest`.
+* `paths` crea snapshots planos bajo `paths/` (modo legacy sencillo).
+* `apps[]` (formato clásico) sigue disponible para casos avanzados mezclando `dir` y `file`.
 
 ---
 
-## Autenticación (HTTPS + token)
+## Autenticación (HTTPS/SSH)
 
-**Opción A (recomendada)**: archivo de credenciales (git-credential-store):
+syncgitconfig soporta tres flujos sin intervención manual:
 
-* `/etc/syncgitconfig/credentials/.git-credentials` (permisos `600`)
-* El instalador y los scripts configuran:
+1. **HTTPS + token** (`auth.method: https_token`).
+   * Guarda el token en `auth.token_file` (o usa `token_inline` en el YAML para bootstrap: el instalador lo migra y lo borra).
+   * Los scripts configuran `git config credential.helper "store --file=…"` automáticamente.
+   * Ejemplo de entrada: `https://syncgit-bot:TU_TOKEN@gitea.example.local/ORG/configs-host.git`.
+2. **HTTPS + `.netrc`** (`auth.method: https_netrc`).
+   * Usa la misma credencial que otros procesos (curl, ansible, etc.).
+   * Puedes indicar un fichero concreto con `auth.netrc_file`; si no, se utiliza `~/.netrc`.
+   * Se exporta `GIT_CURL_OPTS=--netrc(--file=…)` y `GIT_TERMINAL_PROMPT=0` para evitar prompts.
+3. **SSH + deploy key** (`auth.method: ssh`).
+   * `remote_url` admite `git@host:ORG/repo.git` o `ssh://`.
+   * Opcionalmente define `auth.ssh_key_path`, `auth.ssh_known_hosts` o `auth.ssh_extra_args` para personalizar `GIT_SSH_COMMAND`.
 
-  ```
-  git -C /opt/configs-host config credential.helper "store --file=/etc/syncgitconfig/credentials/.git-credentials"
-  ```
-* Contenido de ejemplo:
-
-  ```
-  https://syncgit-bot:TU_TOKEN@gitea.example.local/ORG/configs-host.git
-  ```
-
-**Opción B**: `auth.token_inline` en el YAML (solo bootstrap). El instalador lo migra a `.git-credentials` y **lo elimina** del YAML.
+> 💡 Si el `remote_url` ya incluye `https://usuario:token@…`, la detección automática lo tratará como `https_inline` y se evitarán prompts interactivos.
 
 ---
 

@@ -1,59 +1,71 @@
 #!/usr/bin/env bash
 set -euo pipefail
-CONF="/etc/syncgitconfig/syncgitconfig.yaml"
 
-val(){
-  local key="$1"
-  awk -v key="$key" '
-    function trim(s) { sub(/^[ \t\r\n]+/, "", s); sub(/[ \t\r\n]+$/, "", s); return s }
-    /^[[:space:]]*#/ { next }
-    {
-      line = $0
-      sub(/[[:space:]]+#.*/, "", line)
-      if (match(line, /^[[:space:]]*([^:]+):[[:space:]]*(.*)$/, m)) {
-        k = trim(m[1])
-        if (k == key) {
-          v = trim(m[2])
-          gsub(/^"|"$/, "", v)
-          gsub(/^\047|\047$/, "", v)
-          print v
-          exit
-        }
-      }
-    }
-  ' "$CONF"
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+CONF_PATH="${CONF_PATH:-/etc/syncgitconfig/syncgitconfig.yaml}"
+# shellcheck source=/opt/syncgitconfig/lib/common.sh
+. "$SCRIPT_DIR/../lib/common.sh"
+
+print_header() {
+  echo "== syncgitconfig status =="
+  if [[ -f "$CONF_PATH" ]]; then
+    echo "Config: $CONF_PATH"
+  else
+    echo "Config: (no existe)"
+  fi
 }
 
-ENV="$(val env 2>/dev/null || true)"
-HOST="$(val host 2>/dev/null || true)"
-REPO="$(val repo_path 2>/dev/null || true)"
-REMOTE="$(val remote_url 2>/dev/null || true)"
-COOLDOWN="$(val cooldown 2>/dev/null || true)"
-[[ -z "$COOLDOWN" ]] && COOLDOWN="$(val cooldown_seconds 2>/dev/null || true)"
+main() {
+  print_header
 
-echo "== syncgitconfig status =="
-[[ -f "$CONF" ]] && echo "Config: $CONF" || echo "Config: (no existe)"
-echo "Repo:   ${REPO:-}"
-echo "Remote: ${REMOTE:-}"
-echo "Env:    ${ENV:-}"
-echo "Host:   ${HOST:-}"
-echo "Cooldown: ${COOLDOWN:-}"
+  local load_ok=0
+  if [[ -f "$CONF_PATH" ]]; then
+    if load_config_yaml "$CONF_PATH"; then
+      load_ok=1
+    else
+      warn "No se pudo cargar el YAML de configuración"
+    fi
+  fi
 
-STAGING="/var/lib/syncgitconfig/staging/${HOST:-unknown}"
-echo "Staging: $STAGING"
+  local repo="$CFG_repo_path"
+  local remote_display="$(redact_remote_url "$CFG_remote_url")"
+  local env="$CFG_env"
+  local host="$CFG_host"
+  local cooldown="$CFG_cooldown_seconds"
 
-APPS_CNT=$(ls -1 /opt/syncgitconfig/bin/app-sync-* 2>/dev/null | wc -l || true)
-echo "Apps:   ${APPS_CNT}"
+  echo "Repo:   ${repo:-}"
+  echo "Remote: ${remote_display:-}"
+  echo "Env:    ${env:-}"
+  echo "Host:   ${host:-}"
+  echo "Cooldown: ${cooldown:-}"
 
-echo -e "\n-- Últimas 10 líneas del log --"
-LOGFILE="/var/log/syncgitconfig/syncgitconfig.log"
-[[ -f "$LOGFILE" ]] && tail -n 10 "$LOGFILE" || echo "(sin log)"
+  local staging="/var/lib/syncgitconfig/staging/${host:-unknown}"
+  echo "Staging: $staging"
 
-echo -e "\n-- Estado Git --"
-if [[ -n "${REPO:-}" && -d "$REPO/.git" ]]; then
-  git -C "$REPO" status -s || true
-else
-  echo "Repo no inicializado."
-fi
+  if (( load_ok )); then
+    echo "Apps:   ${#APP_NAMES[@]}"
+  else
+    echo "Apps:   (desconocido)"
+  fi
 
-echo -e "\nWatcher: $(systemctl is-active syncgitconfig-watch.service 2>/dev/null || echo unknown)"
+  echo -e "\n-- Últimas 10 líneas del log --"
+  local LOGFILE="/var/log/syncgitconfig/syncgitconfig.log"
+  if [[ -f "$LOGFILE" ]]; then
+    tail -n 10 "$LOGFILE"
+  else
+    echo "(sin log)"
+  fi
+
+  echo -e "\n-- Estado Git --"
+  if [[ -n "$repo" && -d "$repo/.git" ]]; then
+    run_git -C "$repo" status -s || true
+  else
+    echo "Repo no inicializado."
+  fi
+
+  local watcher_state
+  watcher_state="$(systemctl is-active syncgitconfig-watch.service 2>/dev/null || echo unknown)"
+  echo -e "\nWatcher: $watcher_state"
+}
+
+main "$@"

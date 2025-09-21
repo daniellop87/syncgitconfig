@@ -1,17 +1,34 @@
 #!/usr/bin/env bash
 set -euo pipefail
-CONF="/etc/syncgitconfig/syncgitconfig.yaml"
-REPO_PATH="$(awk -F': ' '/^repo_path:/ {print $2}' "$CONF" | tr -d "\"'")"
-[[ -n "${REPO_PATH:-}" ]] || { echo "[ERR] repo_path no definido en $CONF"; exit 1; }
-[[ -d "$REPO_PATH/.git" ]] || { echo "[ERR] $REPO_PATH no es un repo Git"; exit 1; }
-BR="$(git -C "$REPO_PATH" rev-parse --abbrev-ref HEAD 2>/dev/null || echo main)"
-echo "[INFO] Pull de $REPO_PATH (branch: $BR)"
-if git -C "$REPO_PATH" pull --ff-only; then
-  echo "[OK] Fast-forward aplicado."
-  exit 0
-fi
-echo "[WARN] Divergencia. Stash + reset a origin/$BR"
- git -C "$REPO_PATH" stash push -u -m "syncgitconfig-autostash-$(date -Iseconds)" || true
- git -C "$REPO_PATH" fetch --prune
- git -C "$REPO_PATH" reset --hard "origin/$BR"
- echo "[OK] Reset duro completado."
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+CONF_PATH="${CONF_PATH:-/etc/syncgitconfig/syncgitconfig.yaml}"
+# shellcheck source=/opt/syncgitconfig/lib/common.sh
+. "$SCRIPT_DIR/../lib/common.sh"
+
+main() {
+  if ! load_config_yaml "$CONF_PATH"; then
+    err "No se pudo cargar la configuración ($CONF_PATH)"
+    exit 1
+  fi
+
+  local repo="$CFG_repo_path"
+  [[ -d "$repo/.git" ]] || { err "$repo no es un repo Git válido"; exit 1; }
+
+  local branch
+  branch="$(run_git -C "$repo" rev-parse --abbrev-ref HEAD 2>/dev/null || echo main)"
+  ok "Pull de $repo (branch: $branch)"
+
+  if run_git -C "$repo" pull --ff-only; then
+    ok "Repositorio actualizado."
+    exit 0
+  fi
+
+  warn "Divergencia detectada. Ejecutando stash + reset a origin/$branch"
+  run_git -C "$repo" stash push -u -m "syncgitconfig-autostash-$(date -Iseconds)" || true
+  run_git -C "$repo" fetch --prune || true
+  run_git -C "$repo" reset --hard "origin/$branch"
+  ok "Reset duro completado."
+}
+
+main "$@"

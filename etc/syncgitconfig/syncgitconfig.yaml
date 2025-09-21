@@ -6,19 +6,32 @@ host: auto                                    # o un FQDN fijo como "host01.exam
 staging_path: /var/lib/syncgitconfig/staging
 cooldown_seconds: 60
 
-watch_paths:
-  - "/etc/systemd/system"
-# paths:
+environments:
+  prod:
+    hosts:
+      auto:
+        apps:
+          systemd:
+            paths:
+              - /etc/systemd/system
+          # phpipam:
+          #   paths:
+          #     - /var/www/phpipam
+# watch_paths:
 #   - "/etc/systemd/system"
 
 # === Autenticación (HTTPS + token) ===
 auth:
   method: https_token
   username: syncgit-bot
-  # Opción A (recomendada): indicar el fichero de credenciales (git-credential-store)
   token_file: /etc/syncgitconfig/credentials/.git-credentials
-  # Opción B (bootstrap rápido): PON TEMPORALMENTE EL TOKEN AQUÍ y el instalador lo migrará
   # token_inline: "PON_AQUI_TU_TOKEN_Y_LUEGO_SE_BORRA"
+  # method: https_netrc
+  # netrc_file: /root/.netrc
+  # method: ssh
+  # ssh_key_path: /root/.ssh/id_ed25519
+  # ssh_known_hosts: /etc/ssh/ssh_known_hosts
+  # ssh_extra_args: "-o IdentitiesOnly=yes"
 
 # === Exclusiones globales ===
 exclude:
@@ -31,13 +44,13 @@ exclude:
   - "*.srl"
 
 # === Modelo por aplicación ===
-apps:
-  - name: systemd
-    dest: "apps/systemd"
-    sources:
-      - path: "/etc/systemd/system"
-        type: dir
-        strip_prefix: "/etc/systemd/system"
+# apps:
+#   - name: systemd
+#     dest: "apps/systemd"
+#     sources:
+#       - path: "/etc/systemd/system"
+#         type: dir
+#         strip_prefix: "/etc/systemd/system"
 
   # Ejemplos para activar cuando quieras:
   # - name: ssh

@@ -13,15 +13,24 @@ repo_path: __REPO_PATH__   # Ruta local donde se clona el repo
 remote_url: __REMOTE_URL__ # URL remota del repo (HTTPS/SSH)
 cooldown: __COOLDOWN__     # Intervalo en segundos entre syncs
 
-# ---- Rutas vigiladas ----
-watch_paths:
-  - /etc/systemd            # unidades systemd
-  # - /etc/nginx            # ejemplo: configuración de nginx
-  # - /etc/php/8.2          # ejemplo: configuración PHP
-  # - /var/www/phpipam      # ejemplo: configs de phpIPAM
-  # - /etc/ssh              # ejemplo: configuración de SSH
+# ---- Modelo declarativo por entorno/host ----
+environments:
+  __ENV__:
+    hosts:
+      __HOST__:
+        apps:
+          systemd:
+            paths:
+              - /etc/systemd/system
+          # phpipam:
+          #   paths:
+          #     - /var/www/phpipam
 
-# ---- Snapshot directo (alternativa simple a apps) ----
+# ---- Watchers personalizados (opcional) ----
+# watch_paths:
+#   - /etc/systemd
+
+# ---- Snapshot directo (legacy) ----
 # paths:
 #   - /etc/systemd/system
 #   - /var/www/phpipam
@@ -31,15 +40,21 @@ watch_paths:
 #   - "*.log"
 #   - "/etc/nginx/sites-enabled/default"
 
-# ---- Ejemplo de múltiples repos (opcional) ----
-# repos:
-#   - name: phpipam
-#     repo_path: /opt/configs-phpipam
-#     remote_url: https://gitlab.local/phpipam.git
-#     watch_paths:
-#       - /var/www/phpipam
-#   - name: nginx
-#     repo_path: /opt/configs-nginx
-#     remote_url: https://gitlab.local/nginx.git
-#     watch_paths:
-#       - /etc/nginx
+# ---- Autenticación ----
+auth:
+  method: https_token        # https_token | https_netrc | ssh
+  username: syncgit-bot
+  token_file: /etc/syncgitconfig/credentials/.git-credentials
+  # token_inline: "PON TEMPORALMENTE EL TOKEN AQUÍ Y SE MIGRA"
+  # netrc_file: /root/.netrc
+  # ssh_key_path: /root/.ssh/id_ed25519
+  # ssh_known_hosts: /etc/ssh/ssh_known_hosts
+  # ssh_extra_args: "-o IdentitiesOnly=yes"
+
+# ---- Apps manuales (formato clásico) ----
+# apps:
+#   - name: systemd
+#     dest: "apps/systemd"
+#     sources:
+#       - path: "/etc/systemd/system"
+#         type: dir
