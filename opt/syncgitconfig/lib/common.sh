@@ -32,6 +32,7 @@ CFG_cooldown_seconds=60
 AUTH_method=""; AUTH_username=""; AUTH_token_file=""; AUTH_token_inline=""
 EXCLUDES=()
 WATCH_PATHS=()
+PATHS=()
 APP_NAMES=()     # index -> app name
 APP_DESTS=()     # index -> dest path
 SRC_APPIDX=()    # parallel arrays: por cada source
@@ -42,21 +43,25 @@ SRC_STRIPS=()
 # Helpers para “inyectar” datos desde el parser
 _add_exclude()    { EXCLUDES+=("$1"); }
 _add_watch_path() { [[ -n "$1" ]] && WATCH_PATHS+=("$1"); }
+_add_path()       { [[ -n "$1" ]] && PATHS+=("$1"); }
 _add_app()        { APP_NAMES+=("$1"); APP_DESTS+=("$2"); }
 _add_source()     { SRC_APPIDX+=("$1"); SRC_PATHS+=("$2"); SRC_TYPES+=("$3"); SRC_STRIPS+=("${4:-}"); }
+
+: "${BYPASS_COOLDOWN:=0}"
 
 # Parser YAML minimalista (formato estricto, 2 espacios por nivel)
 # Soporta:
 # - escalares al raíz: repo_path, remote_url, env, host, staging_path, cooldown
 # - auth: method, username, token_file, token_inline
 # - exclude: lista simple "- patrón"
+# - paths: lista simple de rutas para snapshot directo
 # - apps: - name, dest, sources: - path, type, strip_prefix
 load_config_yaml() {
   local yaml="$1"
   [[ -f "$yaml" ]] || { err "No existe config YAML: $yaml"; return 1; }
 
   # Resetea arrays y vars
-  EXCLUDES=(); WATCH_PATHS=(); APP_NAMES=(); APP_DESTS=(); SRC_APPIDX=(); SRC_PATHS=(); SRC_TYPES=(); SRC_STRIPS=()
+  EXCLUDES=(); WATCH_PATHS=(); PATHS=(); APP_NAMES=(); APP_DESTS=(); SRC_APPIDX=(); SRC_PATHS=(); SRC_TYPES=(); SRC_STRIPS=()
   CFG_repo_path=""; CFG_remote_url=""; CFG_env="prod"; CFG_host=""; CFG_staging_path=""
   CFG_cooldown_seconds=60; AUTH_method=""; AUTH_username=""; AUTH_token_file=""; AUTH_token_inline=""
 
@@ -76,7 +81,7 @@ load_config_yaml() {
   }
 
   BEGIN{
-    in_auth=0; in_excl=0; in_watch=0; in_apps=0; have_app=0; in_sources=0;
+    in_auth=0; in_excl=0; in_watch=0; in_paths=0; in_apps=0; have_app=0; in_sources=0;
     app_idx=-1;
     src_path=""; src_type=""; src_strip="";
   }
@@ -98,7 +103,7 @@ load_config_yaml() {
 
     # nivel 0
     if (indent==0) {
-      in_auth=0; in_excl=0; in_watch=0;
+      in_auth=0; in_excl=0; in_watch=0; in_paths=0;
       if (key=="repo_path")    { print "CFG_repo_path=\"" val "\"" }
       else if (key=="remote_url"){ print "CFG_remote_url=\"" val "\"" }
       else if (key=="env")     { print "CFG_env=\"" val "\"" }
@@ -108,6 +113,7 @@ load_config_yaml() {
       else if (key=="auth")    { in_auth=1 }
       else if (key=="exclude") { in_excl=1 }
       else if (key=="watch_paths") { in_watch=1 }
+      else if (key=="paths") { in_paths=1 }
       else if (key=="apps")    { in_apps=1 }
       next
     }
@@ -124,6 +130,11 @@ load_config_yaml() {
       if (in_watch && match(line, /^[ ]*-[ ]+/)) {
         pat=dequote(trim(substr(line, index(line,"-")+1)))
         print "_add_watch_path \"" pat "\""
+        next
+      }
+      if (in_paths && match(line, /^[ ]*-[ ]+/)) {
+        pat=dequote(trim(substr(line, index(line,"-")+1)))
+        print "_add_path \"" pat "\""
         next
       }
       if (in_excl && match(line, /^[ ]*-[ ]+/)) {
@@ -212,6 +223,12 @@ acquire_lock_or_exit() {
 
 respect_cooldown_or_exit() {
   local now last=0 cdn="$CFG_cooldown_seconds"
+  if (( BYPASS_COOLDOWN )); then
+    now=$(date +%s)
+    log "[INFO] Cooldown ignorado (--no-cooldown)."
+    echo "$now" > "$COOLDOWN_FILE"
+    return 0
+  fi
   now=$(date +%s)
   [[ -f "$COOLDOWN_FILE" ]] && last=$(cat "$COOLDOWN_FILE" 2>/dev/null || echo 0)
   if (( now - last < cdn )); then
@@ -276,7 +293,8 @@ git_commit_and_push() {
   git -C "$repo" add -A "$hostroot"
   if git -C "$repo" diff --cached --quiet "$hostroot"; then
     if [[ -n "$staging_root" && "$staging_has_content" == 0 ]]; then
-      warn "Sin cambios que comitear: staging ${staging_root} está vacío (¿sources sin archivos?)."
+      warn "Sin cambios que comitear: staging ${staging_root} está vacío."
+      log "[INFO] staging vacío. Usa 'syncgitconfig-seed' o ejecuta syncgitconfig-run --seed para generar un snapshot inicial."
     elif [[ "$staging_changed" == 0 ]]; then
       ok "Sin cambios que comitear: ${hostroot} ya coincide con staging."
     else

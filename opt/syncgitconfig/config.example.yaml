@@ -21,6 +21,11 @@ watch_paths:
   # - /var/www/phpipam      # ejemplo: configs de phpIPAM
   # - /etc/ssh              # ejemplo: configuración de SSH
 
+# ---- Snapshot directo (alternativa simple a apps) ----
+# paths:
+#   - /etc/systemd/system
+#   - /var/www/phpipam
+
 # ---- Exclusiones (opcional) ----
 # exclude:
 #   - "*.log"

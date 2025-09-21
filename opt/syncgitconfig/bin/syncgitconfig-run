@@ -8,6 +8,45 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck source=/opt/syncgitconfig/lib/common.sh
 . "$SCRIPT_DIR/../lib/common.sh"
 
+BYPASS_COOLDOWN=0
+SEED_MODE=0
+
+usage() {
+  cat <<'USAGE'
+Uso: syncgitconfig-run [--no-cooldown] [--seed]
+
+  --no-cooldown  Ejecuta ignorando la ventana de cooldown configurada.
+  --seed         Fuerza snapshot inicial (implica --no-cooldown).
+USAGE
+}
+
+parse_args() {
+  local unknown=()
+  while (($#)); do
+    case "$1" in
+      --no-cooldown)
+        BYPASS_COOLDOWN=1
+        ;;
+      --seed)
+        SEED_MODE=1
+        BYPASS_COOLDOWN=1
+        ;;
+      -h|--help)
+        usage
+        exit 0
+        ;;
+      *)
+        unknown+=("$1")
+        ;;
+    esac
+    shift
+  done
+
+  if ((${#unknown[@]})); then
+    warn "Argumentos ignorados: ${unknown[*]}"
+  fi
+}
+
 dest_within_repo_or_die() {
   local dest="$1" repo_root="$2" app="$3"
 
@@ -36,7 +75,7 @@ PY
   fi
 
   case "$resolved" in
-    "$repo_root"|"$repo_root"/*) ;; 
+    "$repo_root"|"$repo_root"/*) ;;
     *)
       err "apps[$app].dest apunta fuera del repo: $dest"
       exit 1
@@ -44,7 +83,22 @@ PY
   esac
 }
 
+path_dest_from_source() {
+  local src="$1"
+  local cleaned="$src"
+  if [[ "$cleaned" != "/" ]]; then
+    cleaned="${cleaned%/}"
+  fi
+  if [[ -z "$cleaned" || "$cleaned" == "/" ]]; then
+    echo "paths/root"
+  else
+    echo "paths${cleaned}"
+  fi
+}
+
 main() {
+  parse_args "$@"
+
   require_cmd rsync git install || exit 1
   load_config_yaml "$CONF_PATH"
 
@@ -59,18 +113,58 @@ main() {
 
   local staging_changed=0
 
-  local -a RSYNC_FLAGS; RSYNC_FLAGS=(-a --delete --itemize-changes)
-  local -a EXCL; read -r -a EXCL <<<"$(rsync_exclude_flags)"
+  RSYNC_FLAGS=(-a --delete --itemize-changes)
+  read -r -a EXCL <<<"$(rsync_exclude_flags)"
+
+  local -a EFFECTIVE_PATHS
+  EFFECTIVE_PATHS=("${PATHS[@]}")
+  local using_watch_paths_as_sources=0
+  if (( ${#EFFECTIVE_PATHS[@]} == 0 && ${#WATCH_PATHS[@]} > 0 && ${#APP_NAMES[@]} == 0 )); then
+    EFFECTIVE_PATHS=("${WATCH_PATHS[@]}")
+    using_watch_paths_as_sources=1
+  fi
+
+  if (( ${#APP_NAMES[@]} == 0 && ${#EFFECTIVE_PATHS[@]} == 0 )); then
+    err "No se han definido ni 'paths' ni 'watch_paths' en $CONF_PATH."
+    err "Añade rutas (bloque 'apps' o 'paths') para generar snapshots."
+    exit 1
+  fi
+
+  if (( using_watch_paths_as_sources )); then
+    log "[INFO] Usando watch_paths como rutas a sincronizar (modo watch_paths)."
+  fi
+
+  local staging_pre_has_content=0
+  if [[ -n "$(find "$STAGING_ROOT" -mindepth 1 -type f -print -quit 2>/dev/null)" ]]; then
+    staging_pre_has_content=1
+  fi
+
+  local repo_has_content=0
+  if [[ -n "$(find "$REPO_HOST_ROOT" -mindepth 1 -type f -print -quit 2>/dev/null)" ]]; then
+    repo_has_content=1
+  fi
+
+  local initial_snapshot=0
+  if (( staging_pre_has_content == 0 && repo_has_content == 0 )); then
+    initial_snapshot=1
+  fi
+  if (( SEED_MODE )); then
+    initial_snapshot=1
+  fi
 
   log "=== RUN $CFG_host ($CFG_env) ==="
   log "Staging: $STAGING_ROOT"
   log "Repo:    $REPO_HOST_ROOT"
 
-  # Limpia staging de apps (no borra staging root)
-  mkdir -p "$STAGING_ROOT"
-  # No borramos todo staging para permitir apps múltiples: rsync sobre cada destino
+  if (( SEED_MODE )); then
+    log "[INFO] Ejecutando en modo seed (--seed)."
+  fi
+  if (( initial_snapshot )); then
+    log "[INFO] Snapshot inicial: staging y repo vacíos."
+  fi
 
-  # Recorre apps y sus sources
+  mkdir -p "$STAGING_ROOT"
+
   for ((i=0; i<${#APP_NAMES[@]}; i++)); do
     local app="${APP_NAMES[$i]}" dest="${APP_DESTS[$i]}"
     [[ -z "$dest" ]] && dest="apps/$app"
@@ -79,15 +173,13 @@ main() {
     local staged_app_root="$STAGING_ROOT/$dest"
     mkdir -p "$staged_app_root"
 
-    # Fuentes de esta app
     for ((s=0; s<${#SRC_APPIDX[@]}; s++)); do
       if (( SRC_APPIDX[$s] == i )); then
         local src="${SRC_PATHS[$s]}" typ="${SRC_TYPES[$s]}" strip="${SRC_STRIPS[$s]}"
-        [[ -z "$strip" ]] && strip="$src"  # por defecto, recorta todo el prefijo del propio src
+        [[ -z "$strip" ]] && strip="$src"
 
         if [[ "$typ" == "dir" ]]; then
           if [[ -d "$src" ]]; then
-            # Calcula la subruta relativa respecto a strip_prefix
             local rel="/"
             if [[ "$src" == "$strip"* ]]; then
               rel="${src#"$strip"}"; [[ "$rel" == "/" ]] && rel=""
@@ -118,7 +210,7 @@ main() {
           fi
         elif [[ "$typ" == "file" ]]; then
           if [[ -f "$src" ]]; then
-            local rel="${src#"$strip"}"; rel="${rel#/}"   # quita leading /
+            local rel="${src#"$strip"}"; rel="${rel#/}"
             local tgt="$staged_app_root/$rel"
             local display="$dest"
             [[ -n "$rel" ]] && display="$dest/$rel"
@@ -139,7 +231,56 @@ main() {
     done
   done
 
-  # Staging -> Repo
+  if (( ${#EFFECTIVE_PATHS[@]} )); then
+    declare -A seen_paths=()
+    for src in "${EFFECTIVE_PATHS[@]}"; do
+      [[ -z "$src" ]] && continue
+      if [[ -n "${seen_paths[$src]:-}" ]]; then
+        continue
+      fi
+      seen_paths[$src]=1
+      local dest_rel
+      dest_rel="$(path_dest_from_source "$src")"
+      local display="$dest_rel"
+
+      if [[ -d "$src" ]]; then
+        local tgt="$STAGING_ROOT/$dest_rel"
+        mkdir -p "$tgt"
+        local rsync_out=""
+        rsync_out="$(rsync "${RSYNC_FLAGS[@]}" "${EXCL[@]}" "$src/" "$tgt/" 2>&1)"
+        local rsync_rc=$?
+        if (( rsync_rc != 0 )); then
+          warn "PATH-DIR: $src -> $display (rsync falló con código $rsync_rc)"
+          if [[ -n "$rsync_out" ]]; then
+            while IFS= read -r line; do log "    $line"; done <<<"$rsync_out"
+          fi
+          continue
+        fi
+        if [[ -n "$rsync_out" ]]; then
+          staging_changed=1
+          log "PATH-DIR: $src -> $display (cambios)"
+          while IFS= read -r line; do log "    $line"; done <<<"$rsync_out"
+        else
+          log "PATH-DIR: $src -> $display (sin cambios)"
+        fi
+      elif [[ -f "$src" ]]; then
+        local tgt="$STAGING_ROOT/$dest_rel"
+        local parent
+        parent="$(dirname "$tgt")"
+        mkdir -p "$parent"
+        if [[ -f "$tgt" ]] && cmp -s "$src" "$tgt"; then
+          log "PATH-FILE: $src -> $display (sin cambios)"
+        else
+          install -D -m 0644 "$src" "$tgt"
+          staging_changed=1
+          log "PATH-FILE: $src -> $display (actualizado)"
+        fi
+      else
+        warn "Ruta en paths/watch_paths no existe: $src"
+      fi
+    done
+  fi
+
   log "Sync STAGING -> REPO"
   rsync "${RSYNC_FLAGS[@]}" "${EXCL[@]}" "$STAGING_ROOT/" "$REPO_HOST_ROOT/" | tee -a "$LOG_FILE" || true
 
@@ -148,7 +289,6 @@ main() {
     staging_has_content=0
   fi
 
-  # Commit/push (commit único; el mensaje incluye host y env)
   git_commit_and_push "$CFG_repo_path" "$REPO_HOST_ROOT" "$CFG_env" "$CFG_host" "$STAGING_ROOT" "$staging_changed" "$staging_has_content"
 
   ok "RUN completado."
