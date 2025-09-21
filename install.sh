@@ -64,7 +64,7 @@ Parámetros:
   --host              Hostname o "auto" (por defecto: auto)
   --cooldown          Segundos entre comprobaciones (por defecto: 60)
   --non-interactive   No pedir confirmaciones
-  --insecure          Deshabilita verificación SSL solo en la clonación
+  --insecure          Deshabilita verificación SSL (usar solo con repos de confianza)
   -h | --help         Ayuda
 EOF
 }
@@ -93,6 +93,11 @@ done
 require_root
 mkdir -p "$LOG_DIR" "$ETC_DIR" "$CREDENTIALS_DIR"
 touch "$LOGFILE" 2>/dev/null || true
+
+if (( INSECURE )); then
+  export GIT_SSL_NO_VERIFY=true
+  log "[WARN] --insecure activo: se deshabilitará la verificación SSL en las operaciones Git."
+fi
 
 log "Instalación iniciada."
 log "Infra:"
@@ -177,7 +182,7 @@ if [[ -d "$REPO_PATH/.git" ]]; then
   log "[INFO] Ya existe un repositorio en ${REPO_PATH}, omito clonación."
 else
   if (( INSECURE )); then
-    c_yellow "[WARN] --insecure activo: deshabilitando verificación SSL SOLO en esta clonación."
+    c_yellow "[WARN] --insecure activo: clonando sin verificación SSL."
     GIT_SSL_NO_VERIFY=true git -c http.sslVerify=false clone "$REMOTE_URL" "$REPO_PATH" 2>&1 | tee -a "$LOGFILE"
   else
     git clone "$REMOTE_URL" "$REPO_PATH" 2>&1 | tee -a "$LOGFILE"
@@ -186,6 +191,10 @@ fi
 
 # Actualizar repo local al remoto y realizar commit inicial si hace falta
 if [[ -d "$REPO_PATH/.git" ]]; then
+  if (( INSECURE )); then
+    git -C "$REPO_PATH" config http.sslVerify false || true
+    log "[WARN] --insecure: http.sslVerify=false configurado en $REPO_PATH"
+  fi
   # Si el repo local existe o se acaba de clonar, asegurar que está actualizado
   if git -C "$REPO_PATH" rev-parse --abbrev-ref HEAD &>/dev/null; then
     log "[INFO] Actualizando repositorio local desde remoto (git pull)."
