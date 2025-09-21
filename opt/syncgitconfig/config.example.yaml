@@ -1,0 +1,40 @@
+# ============================================================
+# Archivo de configuración de syncgitconfig
+# ============================================================
+# Edita con cuidado y reinicia servicios tras cambios:
+#   sudo systemctl restart syncgitconfig-watch.service
+#   sudo systemctl restart syncgitconfig-sync.service
+# ============================================================
+
+# ---- Parámetros globales ----
+env: __ENV__               # Entorno (prod, pre, dev, test)
+host: __HOST__             # Hostname (o "auto" para autodetectar)
+repo_path: __REPO_PATH__   # Ruta local donde se clona el repo
+remote_url: __REMOTE_URL__ # URL remota del repo (HTTPS/SSH)
+cooldown: __COOLDOWN__     # Intervalo en segundos entre syncs
+
+# ---- Rutas vigiladas ----
+watch_paths:
+  - /etc/systemd            # unidades systemd
+  # - /etc/nginx            # ejemplo: configuración de nginx
+  # - /etc/php/8.2          # ejemplo: configuración PHP
+  # - /var/www/phpipam      # ejemplo: configs de phpIPAM
+  # - /etc/ssh              # ejemplo: configuración de SSH
+
+# ---- Exclusiones (opcional) ----
+# exclude:
+#   - "*.log"
+#   - "/etc/nginx/sites-enabled/default"
+
+# ---- Ejemplo de múltiples repos (opcional) ----
+# repos:
+#   - name: phpipam
+#     repo_path: /opt/configs-phpipam
+#     remote_url: https://gitlab.local/phpipam.git
+#     watch_paths:
+#       - /var/www/phpipam
+#   - name: nginx
+#     repo_path: /opt/configs-nginx
+#     remote_url: https://gitlab.local/nginx.git
+#     watch_paths:
+#       - /etc/nginx
