@@ -42,6 +42,23 @@ c_yellow(){ printf "\033[1;33m%s\033[0m\n" "$*"; }
 c_red(){ printf "\033[1;31m%s\033[0m\n" "$*"; }
 log(){ echo "[$(date +'%F %T')] $*" | tee -a "$LOGFILE" >&2; }
 
+git_clone_repo(){
+  local url="$1" dest="$2"
+  local -a git_cmd
+
+  if (( INSECURE )); then
+    c_yellow "[WARN] --insecure activo: clonando sin verificación SSL."
+    git_cmd=(git -c http.sslVerify=false clone "$url" "$dest")
+    if ! env GIT_SSL_NO_VERIFY=true "${git_cmd[@]}" 2>&1 | tee -a "$LOGFILE"; then
+      return 1
+    fi
+    return 0
+  fi
+
+  git_cmd=(git clone "$url" "$dest")
+  "${git_cmd[@]}" 2>&1 | tee -a "$LOGFILE"
+}
+
 usage() {
   cat <<EOF
 Uso:
@@ -83,12 +100,31 @@ while (( "$#" )); do
     --host)            shift; HOST_NAME="${1:-}";;
     --cooldown)        shift; COOLDOWN="${1:-}";;
     --non-interactive) NON_INTERACTIVE=1 ;;
-    --insecure)        INSECURE=1 ;;
+    --insecure)
+      INSECURE=1
+      if (( $# >= 2 )); then
+        INSECURE_VALUE="${2,,}"
+        case "$INSECURE_VALUE" in
+          1|true|yes) shift ;;
+          0|false|no) INSECURE=0; shift ;;
+        esac
+      fi
+      ;;
+    --insecure=*)
+      INSECURE_VALUE="${1#--insecure=}"
+      case "${INSECURE_VALUE,,}" in
+        1|true|yes) INSECURE=1 ;;
+        0|false|no) INSECURE=0 ;;
+        *) c_red "Valor inválido para --insecure: ${INSECURE_VALUE}"; usage; exit 1 ;;
+      esac
+      ;;
     -h|--help)         usage; exit 0 ;;
     *) c_red "Opción desconocida: $1"; usage; exit 1 ;;
   esac
   shift
 done
+
+unset -v INSECURE_VALUE || true
 
 require_root
 mkdir -p "$LOG_DIR" "$ETC_DIR" "$CREDENTIALS_DIR"
@@ -181,11 +217,10 @@ mkdir -p "$REPO_PATH"
 if [[ -d "$REPO_PATH/.git" ]]; then
   log "[INFO] Ya existe un repositorio en ${REPO_PATH}, omito clonación."
 else
-  if (( INSECURE )); then
-    c_yellow "[WARN] --insecure activo: clonando sin verificación SSL."
-    GIT_SSL_NO_VERIFY=true git -c http.sslVerify=false clone "$REMOTE_URL" "$REPO_PATH" 2>&1 | tee -a "$LOGFILE"
-  else
-    git clone "$REMOTE_URL" "$REPO_PATH" 2>&1 | tee -a "$LOGFILE"
+  if ! git_clone_repo "$REMOTE_URL" "$REPO_PATH"; then
+    log "[ERROR] git clone falló incluso con --insecure (si estaba habilitado)."
+    c_red "[ERROR] No se pudo clonar el repositorio remoto $REMOTE_URL"
+    exit 1
   fi
 fi
 
