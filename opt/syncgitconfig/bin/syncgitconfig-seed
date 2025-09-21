@@ -1,0 +1,7 @@
+#!/usr/bin/env bash
+# syncgitconfig-seed — fuerza un snapshot inicial de las rutas configuradas
+set -euo pipefail
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+
+exec "$SCRIPT_DIR/syncgitconfig-run" --seed --no-cooldown "$@"

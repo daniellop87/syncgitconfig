@@ -17,25 +17,45 @@ main() {
   local -a candidates=()
   if (( ${#WATCH_PATHS[@]} )); then
     candidates=("${WATCH_PATHS[@]}")
-  fi
-  if (( ${#candidates[@]} == 0 )); then
-    warn "watch_paths vacío en YAML; usando fallback /etc/systemd"
-    candidates=("/etc/systemd")
+  else
+    if (( ${#PATHS[@]} )); then
+      candidates+=("${PATHS[@]}")
+    fi
+    if (( ${#SRC_PATHS[@]} )); then
+      candidates+=("${SRC_PATHS[@]}")
+    fi
   fi
 
+  if (( ${#candidates[@]} == 0 )); then
+    err "No se han definido rutas para vigilar (configura 'watch_paths' o rutas en 'apps'/'paths')."
+    exit 1
+  fi
+
+  declare -A seen=()
   local -a watch_list=()
   for path in "${candidates[@]}"; do
     [[ -z "$path" ]] && continue
-    if [[ -e "$path" ]]; then
-      watch_list+=("$path")
-    else
-      warn "Ruta en watch_paths no existe: $path"
+    local target="$path"
+    if [[ -f "$target" ]]; then
+      target="$(dirname "$target")"
+    fi
+    if [[ ! -e "$target" ]]; then
+      warn "Ruta configurada para watch no existe: $path"
+      continue
+    fi
+    if [[ ! -d "$target" ]]; then
+      target="$(dirname "$target")"
+      [[ -z "$target" ]] && target="/"
+    fi
+    if [[ -z "${seen[$target]:-}" ]]; then
+      seen[$target]=1
+      watch_list+=("$target")
     fi
   done
 
   if (( ${#watch_list[@]} == 0 )); then
-    warn "Ninguna ruta de watch_paths es válida; usando fallback /etc/systemd"
-    watch_list=("/etc/systemd")
+    err "Ninguna ruta válida para vigilar. Revisa 'watch_paths' o que las rutas de 'apps/paths' existan."
+    exit 1
   fi
 
   if [[ ! -d "$repo_path/.git" ]]; then
@@ -64,32 +84,10 @@ main() {
     fi
     last_run=$now_sec
 
-    for script in /opt/syncgitconfig/bin/app-sync-*; do
-      [[ -x "$script" ]] || continue
-      log "[INFO] Ejecutando $(basename "$script")"
-      "$script" || {
-        local rc=$?
-        log "[WARN] $(basename "$script") devolvió código $rc"
-      }
-    done
-
-    if [[ -d "$repo_path/.git" ]]; then
-      if ! git -C "$repo_path" diff --quiet || ! git -C "$repo_path" diff --cached --quiet; then
-        git -C "$repo_path" add -A
-        git -C "$repo_path" -c user.name="Infra Backup Bot" -c user.email="infra-backup@${CFG_host}" commit -m "syncgitconfig: auto-commit $(date -Iseconds)"
-        if git -C "$repo_path" push; then
-          log "[OK] Cambios empujados."
-        else
-          log "[WARN] Push falló; intentando pull --ff-only y reintento."
-          if git -C "$repo_path" pull --ff-only && git -C "$repo_path" push; then
-            log "[OK] Resuelto tras pull."
-          else
-            log "[ERR] No se pudo resolver el push."
-          fi
-        fi
-      else
-        log "[INFO] Evento recibido pero sin cambios pendientes en Git."
-      fi
+    log "[INFO] Ejecutando syncgitconfig-run --no-cooldown"
+    if ! "$SCRIPT_DIR/syncgitconfig-run" --no-cooldown; then
+      local rc=$?
+      log "[WARN] syncgitconfig-run terminó con código $rc"
     fi
   done
 }

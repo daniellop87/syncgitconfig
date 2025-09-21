@@ -107,6 +107,14 @@ host: auto
 staging_path: /var/lib/syncgitconfig/staging
 cooldown_seconds: 60
 
+watch_paths:
+  - "/etc/systemd/system"
+  # - "/var/www/phpipam"
+
+# paths:
+#   - "/etc/systemd/system"
+#   - "/var/www/phpipam"
+
 auth:
   method: https_token
   username: syncgit-bot
@@ -145,6 +153,8 @@ apps:
   #       strip_prefix: "/etc/nagios"
 ```
 
+* `paths` sirve para listar rutas simples a snapshot sin definir apps (se copian bajo `paths/`).
+* `watch_paths` indica qué rutas vigilar; si no se define se derivan de `paths`/`apps`.
 * `apps[]` permite **carpetas completas** (`type: dir`) o **archivos sueltos** (`type: file`).
 * `strip_prefix` **recorta** el prefijo del origen para dejar una jerarquía limpia bajo `dest`.
 
@@ -228,6 +238,16 @@ Checkout local (ej.: `/opt/configs-host`):
 systemctl start syncgitconfig.service
 ```
 
+> También puedes lanzar `/opt/syncgitconfig/bin/syncgitconfig-run --no-cooldown` para saltarte temporalmente la ventana de protección.
+
+**Sembrar un snapshot inicial (SOURCES → STAGING)**
+
+```bash
+/opt/syncgitconfig/bin/syncgitconfig-seed
+```
+
+> Ejecuta `syncgitconfig-run --seed --no-cooldown` y copia todo el contenido de las rutas configuradas aunque staging/repo estén vacíos.
+
 **Logs**
 
 ```bash
@@ -257,6 +277,9 @@ tail -f /var/log/syncgitconfig/syncgitconfig.log
   ```bash
   systemctl is-active syncgitconfig-watch.service
   ```
+
+  * Si aparece `[ERR] No se han definido ni 'paths' ni 'watch_paths'`, añade rutas en el YAML (`paths`, `watch_paths` o `apps`).
+  * Si el log indica `[INFO] staging vacío...`, ejecuta `/opt/syncgitconfig/bin/syncgitconfig-seed` para generar el snapshot inicial.
 
 * **Fallo TLS/CA al clonar o hacer pull**
   Importa la CA corporativa en el sistema (por ejemplo, copia el `.crt` a `/usr/local/share/ca-certificates/` y ejecuta `update-ca-certificates`). Utiliza `--insecure` únicamente como medida temporal.

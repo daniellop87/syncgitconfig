@@ -6,6 +6,11 @@ host: auto                                    # o un FQDN fijo como "host01.exam
 staging_path: /var/lib/syncgitconfig/staging
 cooldown_seconds: 60
 
+watch_paths:
+  - "/etc/systemd/system"
+# paths:
+#   - "/etc/systemd/system"
+
 # === Autenticación (HTTPS + token) ===
 auth:
   method: https_token
