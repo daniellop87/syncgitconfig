@@ -64,6 +64,14 @@ load_config_yaml() {
   function ltrim(s){ sub(/^[ \t\r\n]+/,"",s); return s }
   function rtrim(s){ sub(/[ \t\r\n]+$/,"",s); return s }
   function trim(s){ return rtrim(ltrim(s)) }
+  function dequote(s){
+    if (length(s) >= 2) {
+      if (s ~ /^".*"$/ || s ~ /^'\''.*'\''$/) {
+        return substr(s, 2, length(s)-2)
+      }
+    }
+    return s
+  }
 
   BEGIN{
     in_auth=0; in_excl=0; in_apps=0; have_app=0; in_sources=0;
@@ -82,7 +90,8 @@ load_config_yaml() {
     if (match(line, /^[ ]*[^:]+:[ ]*/)) {
       k=substr(line, RSTART, RLENGTH)
       key=trim(substr(k,1,length(k)-1))
-      val=trim(substr(line, RLENGTH+1))
+      sub(/:$/, "", key)
+      val=dequote(trim(substr(line, RLENGTH+1)))
     }
 
     # nivel 0
@@ -110,7 +119,7 @@ load_config_yaml() {
         next
       }
       if (in_excl && match(line, /^[ ]*-[ ]+/)) {
-        pat=trim(substr(line, index(line,"-")+1))
+        pat=dequote(trim(substr(line, index(line,"-")+1)))
         print "_add_exclude \"" pat "\""
         next
       }
@@ -122,7 +131,7 @@ load_config_yaml() {
       if (indent==2 && match(line, /^[ ]*-[ ]+name:[ ]*/)) {
         have_app=1; in_sources=0;
         app_idx++;
-        aname=trim(substr(line, RLENGTH+1))
+        aname=dequote(trim(substr(line, RLENGTH+1)))
         # necesitamos leer dest más abajo; por ahora vacío
         print "_add_app \"" aname "\" \"\""
         next
@@ -144,7 +153,7 @@ load_config_yaml() {
             print "_add_source " app_idx " \"" src_path "\" \"" src_type "\" \"" src_strip "\""
             src_path=""; src_type=""; src_strip="";
           }
-          src_path=trim(substr(line, RLENGTH+1)); next
+          src_path=dequote(trim(substr(line, RLENGTH+1))); next
         }
         if (indent==8 && key!="") {
           if (key=="type")        src_type=val;
@@ -175,6 +184,7 @@ load_config_yaml() {
   # Defaults
   [[ -z "$CFG_host" || "$CFG_host" == "auto" ]] && CFG_host="$(hostname -f 2>/dev/null || hostname)"
   [[ -z "$CFG_staging_path" ]] && CFG_staging_path="/var/lib/syncgitconfig/staging"
+  return 0
 }
 
 # Devuelve flags --exclude para rsync, según EXCLUDES
