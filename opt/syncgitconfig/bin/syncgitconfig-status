@@ -1,13 +1,35 @@
 #!/usr/bin/env bash
 set -euo pipefail
 CONF="/etc/syncgitconfig/syncgitconfig.yaml"
-val(){ awk -F': ' -v k="$1" '$1==k {print $2}' "$CONF" | tr -d "\"'"; }
+
+val(){
+  local key="$1"
+  awk -v key="$key" '
+    function trim(s) { sub(/^[ \t\r\n]+/, "", s); sub(/[ \t\r\n]+$/, "", s); return s }
+    /^[[:space:]]*#/ { next }
+    {
+      line = $0
+      sub(/[[:space:]]+#.*/, "", line)
+      if (match(line, /^[[:space:]]*([^:]+):[[:space:]]*(.*)$/, m)) {
+        k = trim(m[1])
+        if (k == key) {
+          v = trim(m[2])
+          gsub(/^"|"$/, "", v)
+          gsub(/^\047|\047$/, "", v)
+          print v
+          exit
+        }
+      }
+    }
+  ' "$CONF"
+}
 
 ENV="$(val env 2>/dev/null || true)"
 HOST="$(val host 2>/dev/null || true)"
 REPO="$(val repo_path 2>/dev/null || true)"
 REMOTE="$(val remote_url 2>/dev/null || true)"
 COOLDOWN="$(val cooldown 2>/dev/null || true)"
+[[ -z "$COOLDOWN" ]] && COOLDOWN="$(val cooldown_seconds 2>/dev/null || true)"
 
 echo "== syncgitconfig status =="
 [[ -f "$CONF" ]] && echo "Config: $CONF" || echo "Config: (no existe)"
