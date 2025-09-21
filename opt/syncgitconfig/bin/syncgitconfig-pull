@@ -1,0 +1,17 @@
+#!/usr/bin/env bash
+set -euo pipefail
+CONF="/etc/syncgitconfig/syncgitconfig.yaml"
+REPO_PATH="$(awk -F': ' '/^repo_path:/ {print $2}' "$CONF" | tr -d "\"'")"
+[[ -n "${REPO_PATH:-}" ]] || { echo "[ERR] repo_path no definido en $CONF"; exit 1; }
+[[ -d "$REPO_PATH/.git" ]] || { echo "[ERR] $REPO_PATH no es un repo Git"; exit 1; }
+BR="$(git -C "$REPO_PATH" rev-parse --abbrev-ref HEAD 2>/dev/null || echo main)"
+echo "[INFO] Pull de $REPO_PATH (branch: $BR)"
+if git -C "$REPO_PATH" pull --ff-only; then
+  echo "[OK] Fast-forward aplicado."
+  exit 0
+fi
+echo "[WARN] Divergencia. Stash + reset a origin/$BR"
+ git -C "$REPO_PATH" stash push -u -m "syncgitconfig-autostash-$(date -Iseconds)" || true
+ git -C "$REPO_PATH" fetch --prune
+ git -C "$REPO_PATH" reset --hard "origin/$BR"
+ echo "[OK] Reset duro completado."
