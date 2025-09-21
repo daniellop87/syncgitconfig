@@ -28,9 +28,10 @@ rm -rf /opt/logs/syncgitconfig
 
 echo "✅ syncgitconfig ha sido desinstalado completamente."
 
-# 5. Borrarse a sí mismo
+# 5. Borrarse a sí mismo con mensaje final
 SCRIPT_PATH="$(realpath "$0")"
 if [ -f "$SCRIPT_PATH" ]; then
     echo "-> Eliminando el propio script de desinstalación..."
     rm -f "$SCRIPT_PATH"
+    echo "💣 El script uninstall.sh se ha autodestruido correctamente."
 fi
