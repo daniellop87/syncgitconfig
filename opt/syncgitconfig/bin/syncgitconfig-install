@@ -62,37 +62,47 @@ UNIT
 
 migrate_token_inline_to_credentials() {
   # Si token_inline existe en YAML, construye entrada en token_file y lo "redacta" del YAML
-  if [[ -n "$AUTH_token_inline" ]]; then
-    [[ -n "$AUTH_username" ]] || AUTH_username="token"
-    [[ -n "$AUTH_token_file" ]] || AUTH_token_file="/etc/syncgitconfig/credentials/.git-credentials"
-    mkdir -p "$(dirname "$AUTH_token_file")"; chmod 700 "$(dirname "$AUTH_token_file")" || true
-
-    # De remote_url sacamos host y path (manteniendo https://)
-    local url="$CFG_remote_url"
-    if [[ "$url" != https://* ]]; then
-      err "remote_url no es https:// — revisa config"; exit 1
-    fi
-    local proto="https://"
-    local rest="${url#https://}"          # gitea.example/ORG/repo.git
-    # Escribimos línea de credenciales
-    echo "https://${AUTH_username}:${AUTH_token_inline}@${rest}" > "$AUTH_token_file"
-    chmod 600 "$AUTH_token_file"
-
-    # Configura git-credential-store para usar ese fichero en el repo (luego al clonar lo usaremos)
-    git config --global credential.helper "store --file=$AUTH_token_file" || true
-
-    # Redacta token_inline del YAML (sustituye su valor por ***)
-    sed -i 's/^\(\s*token_inline:\s*\).*/\1"REDACTED"/' "$CONF_PATH" || true
-    ok "Token migrado a $AUTH_token_file y redactado en YAML."
+  if [[ -z "$AUTH_token_inline" ]]; then
+    return
   fi
+
+  if [[ "$AUTH_effective_method" != "https_token" ]]; then
+    warn "token_inline definido pero auth.method no es https_token; se omite migración."
+    return
+  fi
+
+  [[ -n "$AUTH_username" ]] || AUTH_username="token"
+  [[ -n "$AUTH_token_file" ]] || AUTH_token_file="/etc/syncgitconfig/credentials/.git-credentials"
+  mkdir -p "$(dirname "$AUTH_token_file")"; chmod 700 "$(dirname "$AUTH_token_file")" || true
+
+  local url="$CFG_remote_url"
+  if [[ "$url" != https://* && "$url" != http://* ]]; then
+    warn "token_inline definido pero remote_url no es HTTPS: $url"
+    return
+  fi
+
+  local rest="$url"
+  rest="${rest#http://}"
+  rest="${rest#https://}"
+  echo "https://${AUTH_username}:${AUTH_token_inline}@${rest}" > "$AUTH_token_file"
+  chmod 600 "$AUTH_token_file"
+
+  git config --global credential.helper "store --file=$AUTH_token_file" || true
+
+  sed -i 's/^\(\s*token_inline:\s*\).*/\1"REDACTED"/' "$CONF_PATH" || true
+  ok "Token migrado a $AUTH_token_file y redactado en YAML."
 }
 
 clone_repo_if_missing() {
   local rp="$CFG_repo_path" url="$CFG_remote_url"
   mkdir -p "$rp"
   if [[ ! -d "$rp/.git" ]]; then
-    log "Clonando repo $url en $rp"
-    git clone "$url" "$rp"
+    local display="$(redact_remote_url "$url")"
+    log "Clonando repo $display en $rp"
+    if ! run_git clone "$url" "$rp"; then
+      err "git clone falló para $display"
+      exit 1
+    fi
   fi
   ok "Repo listo en $rp"
 }

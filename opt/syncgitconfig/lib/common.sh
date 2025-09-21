@@ -30,6 +30,11 @@ require_cmd() {
 CFG_repo_path=""; CFG_remote_url=""; CFG_env="prod"; CFG_host=""; CFG_staging_path=""
 CFG_cooldown_seconds=60
 AUTH_method=""; AUTH_username=""; AUTH_token_file=""; AUTH_token_inline=""
+AUTH_netrc_file=""; AUTH_ssh_key_path=""; AUTH_ssh_known_hosts=""; AUTH_ssh_extra_args=""
+AUTH_effective_method=""
+declare -A AUTH_GIT_ENV_MAP=()
+AUTH_GIT_ENVS=()
+ENV_APP_RECORDS=()
 EXCLUDES=()
 WATCH_PATHS=()
 PATHS=()
@@ -39,6 +44,7 @@ SRC_APPIDX=()    # parallel arrays: por cada source
 SRC_PATHS=()
 SRC_TYPES=()
 SRC_STRIPS=()
+ENSURE_APP_LAST_IDX=-1
 
 # Helpers para “inyectar” datos desde el parser
 _add_exclude()    { EXCLUDES+=("$1"); }
@@ -46,6 +52,223 @@ _add_watch_path() { [[ -n "$1" ]] && WATCH_PATHS+=("$1"); }
 _add_path()       { [[ -n "$1" ]] && PATHS+=("$1"); }
 _add_app()        { APP_NAMES+=("$1"); APP_DESTS+=("$2"); }
 _add_source()     { SRC_APPIDX+=("$1"); SRC_PATHS+=("$2"); SRC_TYPES+=("$3"); SRC_STRIPS+=("${4:-}"); }
+
+__env_add_path() { ENV_APP_RECORDS+=("$1|$2|$3|$4|$5|$6|$7"); }
+
+ensure_app_entry() {
+  local name="$1" dest="$2"
+  local idx
+  for ((idx=0; idx<${#APP_NAMES[@]}; idx++)); do
+    if [[ "${APP_NAMES[$idx]}" == "$name" ]]; then
+      if [[ -n "$dest" ]]; then
+        APP_DESTS[$idx]="$dest"
+      fi
+      ENSURE_APP_LAST_IDX=$idx
+      return 0
+    fi
+  done
+  APP_NAMES+=("$name")
+  APP_DESTS+=("$dest")
+  ENSURE_APP_LAST_IDX=$(( ${#APP_NAMES[@]} - 1 ))
+}
+
+build_command_string() {
+  local out=""
+  local part
+  for part in "$@"; do
+    if [[ -n "$out" ]]; then
+      out+=" "
+    fi
+    out+="$(printf '%q' "$part")"
+  done
+  echo "$out"
+}
+
+configure_git_auth_environment() {
+  AUTH_GIT_ENV_MAP=()
+  AUTH_GIT_ENVS=()
+
+  case "$AUTH_effective_method" in
+    https_token|https_inline|https_netrc|https)
+      AUTH_GIT_ENV_MAP["GIT_TERMINAL_PROMPT"]="0"
+      ;;
+  esac
+
+  if [[ "$AUTH_effective_method" == "https_netrc" ]]; then
+    local netrc_raw="${AUTH_netrc_file:-$HOME/.netrc}"
+    local netrc="$netrc_raw"
+    if [[ "$netrc" == ~* ]]; then
+      netrc="${netrc/#\~/$HOME}"
+    fi
+    if [[ ! -f "$netrc" ]]; then
+      warn "auth.method=https_netrc pero no existe netrc: $netrc"
+    else
+      local existing_opts="${GIT_CURL_OPTS:-}"
+      local new_opts=""
+      if [[ -n "$existing_opts" ]]; then
+        new_opts="$existing_opts "
+      fi
+      if [[ -n "$AUTH_netrc_file" ]]; then
+        new_opts+="--netrc-file=$netrc"
+      else
+        new_opts+="--netrc"
+      fi
+      AUTH_GIT_ENV_MAP["GIT_CURL_OPTS"]="$new_opts"
+    fi
+  fi
+
+  if [[ "$AUTH_effective_method" == "ssh" ]]; then
+    local -a ssh_cmd=(ssh)
+    local ssh_key="$AUTH_ssh_key_path"
+    local known_hosts="$AUTH_ssh_known_hosts"
+    if [[ "$ssh_key" == ~* ]]; then
+      ssh_key="${ssh_key/#\~/$HOME}"
+    fi
+    if [[ "$known_hosts" == ~* ]]; then
+      known_hosts="${known_hosts/#\~/$HOME}"
+    fi
+    if [[ -n "$ssh_key" ]]; then
+      ssh_cmd+=(-i "$ssh_key")
+    fi
+    if [[ -n "$known_hosts" ]]; then
+      ssh_cmd+=(-o "UserKnownHostsFile=$known_hosts")
+      ssh_cmd+=(-o "StrictHostKeyChecking=yes")
+    fi
+    if [[ -n "$AUTH_ssh_extra_args" ]]; then
+      local -a extra=()
+      # shellcheck disable=SC2206 # palabra dividida intencionadamente
+      extra=($AUTH_ssh_extra_args)
+      ssh_cmd+=("${extra[@]}")
+    fi
+    AUTH_GIT_ENV_MAP["GIT_SSH_COMMAND"]="$(build_command_string "${ssh_cmd[@]}")"
+  fi
+
+  local key
+  for key in "${!AUTH_GIT_ENV_MAP[@]}"; do
+    AUTH_GIT_ENVS+=("$key=${AUTH_GIT_ENV_MAP[$key]}")
+  done
+}
+
+run_git() {
+  if (( ${#AUTH_GIT_ENVS[@]} )); then
+    env "${AUTH_GIT_ENVS[@]}" git "$@"
+  else
+    git "$@"
+  fi
+}
+
+apply_environment_apps() {
+  local env="$CFG_env" host="$CFG_host"
+  declare -A added_paths=()
+  local entry
+  for entry in "${ENV_APP_RECORDS[@]}"; do
+    IFS='|' read -r e_env e_host e_app e_dest e_strip e_path e_type <<<"$entry"
+    [[ -n "$e_env" ]] || continue
+    [[ "$e_env" == "$env" ]] || continue
+
+    local host_match=0
+    if [[ -z "$e_host" || "$e_host" == "*" || "$e_host" == "auto" ]]; then
+      host_match=1
+    elif [[ "$host" == "$e_host" ]]; then
+      host_match=1
+    elif [[ "$host" == $e_host ]]; then
+      host_match=1
+    fi
+    (( host_match )) || continue
+
+    local dest="$e_dest"
+    [[ -n "$dest" ]] || dest="apps/$e_app"
+    local idx
+    ensure_app_entry "$e_app" "$dest"
+    idx="$ENSURE_APP_LAST_IDX"
+    APP_DESTS[$idx]="$dest"
+
+    local type="$e_type"
+    [[ -n "$type" ]] || type="auto"
+    local strip="$e_strip"
+    local key="$idx|$e_path|$type|$strip"
+    if [[ -n "${added_paths[$key]:-}" ]]; then
+      continue
+    fi
+    added_paths[$key]=1
+    _add_source "$idx" "$e_path" "$type" "$strip"
+  done
+}
+
+determine_auth_effective_method() {
+  local url="$CFG_remote_url"
+  local method="$AUTH_method"
+  local inline_credentials=0
+  if [[ "$url" =~ ^https?://[^/@]+@ ]] || [[ "$url" =~ ^https?://[^/]*:[^@]+@ ]]; then
+    inline_credentials=1
+  fi
+
+  if [[ -z "$method" ]]; then
+    if [[ "$url" == git@* || "$url" == ssh://* ]]; then
+      method="ssh"
+    elif [[ "$url" =~ ^https?:// || "$url" =~ ^http:// ]]; then
+      if (( inline_credentials )); then
+        method="https_inline"
+      elif [[ -n "$AUTH_token_file" || -n "$AUTH_token_inline" ]]; then
+        method="https_token"
+      elif [[ -n "$AUTH_netrc_file" || -f "$HOME/.netrc" ]]; then
+        method="https_netrc"
+      else
+        method="https"
+      fi
+    else
+      method="none"
+    fi
+  else
+    case "$method" in
+      https_token|token) method="https_token" ;;
+      https_netrc|netrc) method="https_netrc" ;;
+      https_inline|inline) method="https_inline" ;;
+      ssh|ssh_key|deploy_key) method="ssh" ;;
+      https) method="https" ;;
+      none|manual) method="none" ;;
+      *) ;;
+    esac
+  fi
+
+  if [[ "$method" == "https" && (( inline_credentials )) ]]; then
+    method="https_inline"
+  fi
+
+  AUTH_effective_method="$method"
+}
+
+redact_remote_url() {
+  local url="$1"
+  if [[ "$url" == git@* ]]; then
+    echo "$url"
+    return
+  fi
+  if command -v python3 >/dev/null 2>&1; then
+    python3 - "$url" <<'PY'
+import sys
+from urllib.parse import urlsplit, urlunsplit
+
+url = sys.argv[1]
+parts = urlsplit(url)
+if not parts.scheme:
+    print(url)
+    sys.exit(0)
+netloc = parts.netloc
+if "@" in netloc:
+    userinfo, hostpart = netloc.rsplit("@", 1)
+    if ":" in userinfo:
+        user, _ = userinfo.split(":", 1)
+        userinfo = f"{user}:***"
+    else:
+        userinfo = f"{userinfo}:***"
+    netloc = f"{userinfo}@{hostpart}"
+print(urlunsplit((parts.scheme, netloc, parts.path, parts.query, parts.fragment)))
+PY
+  else
+    echo "$url"
+  fi
+}
 
 : "${BYPASS_COOLDOWN:=0}"
 
@@ -64,6 +287,8 @@ load_config_yaml() {
   EXCLUDES=(); WATCH_PATHS=(); PATHS=(); APP_NAMES=(); APP_DESTS=(); SRC_APPIDX=(); SRC_PATHS=(); SRC_TYPES=(); SRC_STRIPS=()
   CFG_repo_path=""; CFG_remote_url=""; CFG_env="prod"; CFG_host=""; CFG_staging_path=""
   CFG_cooldown_seconds=60; AUTH_method=""; AUTH_username=""; AUTH_token_file=""; AUTH_token_inline=""
+  AUTH_netrc_file=""; AUTH_ssh_key_path=""; AUTH_ssh_known_hosts=""; AUTH_ssh_extra_args=""; AUTH_effective_method=""
+  AUTH_GIT_ENV_MAP=(); AUTH_GIT_ENVS=(); ENV_APP_RECORDS=()
 
   # Procesa YAML con awk siguiendo indentación de 0/2/4/6/8 espacios
   # Emitimos llamadas a _add_* y asignaciones CFG_* / AUTH_*
@@ -82,6 +307,8 @@ load_config_yaml() {
 
   BEGIN{
     in_auth=0; in_excl=0; in_watch=0; in_paths=0; in_apps=0; have_app=0; in_sources=0;
+    in_envs=0; in_env_hosts=0; in_env_apps=0; in_env_app_paths=0;
+    current_env=""; current_host=""; env_app=""; env_app_dest=""; env_app_strip=""; env_app_type="";
     app_idx=-1;
     src_path=""; src_type=""; src_strip="";
   }
@@ -103,7 +330,7 @@ load_config_yaml() {
 
     # nivel 0
     if (indent==0) {
-      in_auth=0; in_excl=0; in_watch=0; in_paths=0;
+      in_auth=0; in_excl=0; in_watch=0; in_paths=0; in_apps=0;
       if (key=="repo_path")    { print "CFG_repo_path=\"" val "\"" }
       else if (key=="remote_url"){ print "CFG_remote_url=\"" val "\"" }
       else if (key=="env")     { print "CFG_env=\"" val "\"" }
@@ -115,6 +342,11 @@ load_config_yaml() {
       else if (key=="watch_paths") { in_watch=1 }
       else if (key=="paths") { in_paths=1 }
       else if (key=="apps")    { in_apps=1 }
+      else if (key=="environments") {
+        in_envs=1; current_env=""; current_host=""; in_env_hosts=0; in_env_apps=0; in_env_app_paths=0;
+      } else {
+        in_envs=0;
+      }
       next
     }
 
@@ -125,6 +357,10 @@ load_config_yaml() {
         else if (key=="username")   print "AUTH_username=\"" val "\""
         else if (key=="token_file") print "AUTH_token_file=\"" val "\""
         else if (key=="token_inline") print "AUTH_token_inline=\"" val "\""
+        else if (key=="netrc_file") print "AUTH_netrc_file=\"" val "\""
+        else if (key=="ssh_key_path") print "AUTH_ssh_key_path=\"" val "\""
+        else if (key=="ssh_known_hosts") print "AUTH_ssh_known_hosts=\"" val "\""
+        else if (key=="ssh_extra_args") print "AUTH_ssh_extra_args=\"" val "\""
         next
       }
       if (in_watch && match(line, /^[ ]*-[ ]+/)) {
@@ -141,6 +377,42 @@ load_config_yaml() {
         pat=dequote(trim(substr(line, index(line,"-")+1)))
         print "_add_exclude \"" pat "\""
         next
+      }
+    }
+
+    if (in_envs) {
+      if (indent==2 && key!="") {
+        current_env=key; in_env_hosts=0; in_env_apps=0; in_env_app_paths=0;
+        next
+      }
+      if (indent==4 && key=="hosts") {
+        in_env_hosts=1; current_host=""; next
+      }
+      if (in_env_hosts && indent==6 && key!="") {
+        current_host=key; in_env_apps=0; in_env_app_paths=0;
+        next
+      }
+      if (indent==8 && key=="apps") {
+        in_env_apps=1; env_app=""; env_app_dest=""; env_app_strip=""; env_app_type=""; in_env_app_paths=0;
+        next
+      }
+      if (in_env_apps && indent==10 && key!="") {
+        env_app=key; env_app_dest=""; env_app_strip=""; env_app_type=""; in_env_app_paths=0;
+        next
+      }
+      if (in_env_apps && indent==12 && key!="") {
+        if (key=="dest") { env_app_dest=val; next }
+        else if (key=="strip_prefix") { env_app_strip=val; next }
+        else if (key=="type") { env_app_type=val; next }
+        else if (key=="paths") { in_env_app_paths=1; next }
+      }
+      if (in_env_app_paths && env_app!="" && match(line, /^[ ]*-[ ]+/)) {
+        pat=dequote(trim(substr(line, index(line,"-")+1)))
+        print "__env_add_path \"" current_env "\" \"" current_host "\" \"" env_app "\" \"" env_app_dest "\" \"" env_app_strip "\" \"" pat "\" \"" env_app_type "\""
+        next
+      }
+      if (indent<=8) {
+        in_env_app_paths=0
       }
     }
 
@@ -203,6 +475,9 @@ load_config_yaml() {
   # Defaults
   [[ -z "$CFG_host" || "$CFG_host" == "auto" ]] && CFG_host="$(hostname -f 2>/dev/null || hostname)"
   [[ -z "$CFG_staging_path" ]] && CFG_staging_path="/var/lib/syncgitconfig/staging"
+  determine_auth_effective_method
+  apply_environment_apps
+  configure_git_auth_environment
   return 0
 }
 
@@ -257,16 +532,18 @@ ensure_git_repo_ready() {
     fi
 
     mkdir -p "$(dirname "$repo")"
-    log "Clonando repositorio remoto $remote en $repo"
+    local display_remote
+    display_remote="$(redact_remote_url "$remote")"
+    log "Clonando repositorio remoto $display_remote en $repo"
 
-    local -a git_clone_cmd=(git)
-    if [[ -n "$cred_file" ]]; then
+    local -a git_clone_cmd=()
+    if [[ "$AUTH_effective_method" == "https_token" && -n "$cred_file" ]]; then
       git_clone_cmd+=(-c "credential.helper=store --file=$cred_file")
     fi
     git_clone_cmd+=(clone "$remote" "$repo")
 
-    if ! "${git_clone_cmd[@]}" >>"$LOG_FILE" 2>&1; then
-      err "git clone falló para $remote"
+    if ! run_git "${git_clone_cmd[@]}" >>"$LOG_FILE" 2>&1; then
+      err "git clone falló para $display_remote"
       return 1
     fi
 
@@ -274,14 +551,14 @@ ensure_git_repo_ready() {
   fi
 
   # Configura helper de credenciales si se indicó token_file
-  if [[ -n "$cred_file" ]]; then
-    git -C "$repo" config credential.helper "store --file=$cred_file" || true
+  if [[ "$AUTH_effective_method" == "https_token" && -n "$cred_file" ]]; then
+    run_git -C "$repo" config credential.helper "store --file=$cred_file" || true
   fi
   # Verifica remoto
   local rurl
-  rurl="$(git -C "$repo" remote get-url origin 2>/dev/null || echo "")"
+  rurl="$(run_git -C "$repo" remote get-url origin 2>/dev/null || echo "")"
   if [[ -z "$rurl" ]]; then
-    git -C "$repo" remote add origin "$remote"
+    run_git -C "$repo" remote add origin "$remote"
   fi
 }
 
@@ -290,8 +567,8 @@ git_commit_and_push() {
   local repo="$1" hostroot="$2" env="$3" host="$4" staging_root="${5:-}"
   local staging_changed="${6:-0}" staging_has_content="${7:-1}" app_tag="${8:-}"
 
-  git -C "$repo" add -A "$hostroot"
-  if git -C "$repo" diff --cached --quiet "$hostroot"; then
+  run_git -C "$repo" add -A "$hostroot"
+  if run_git -C "$repo" diff --cached --quiet "$hostroot"; then
     if [[ -n "$staging_root" && "$staging_has_content" == 0 ]]; then
       warn "Sin cambios que comitear: staging ${staging_root} está vacío."
       log "[INFO] staging vacío. Usa 'syncgitconfig-seed' o ejecuta syncgitconfig-run --seed para generar un snapshot inicial."
@@ -306,6 +583,8 @@ git_commit_and_push() {
   local msg="[auto][$env][$host]"
   [[ -n "$app_tag" ]] && msg="$msg[app:$app_tag]"
   msg="$msg snapshot @ $(ts)"
-  git -C "$repo" -c user.name="Infra Backup Bot" -c user.email="infra-backup@${host}" commit -m "$msg" || true
-  git -C "$repo" push || warn "git push falló (revisa credenciales/remoto)"
+  run_git -C "$repo" -c user.name="Infra Backup Bot" -c user.email="infra-backup@${host}" commit -m "$msg" || true
+  if ! run_git -C "$repo" push; then
+    warn "git push falló (revisa credenciales/remoto)"
+  fi
 }
