@@ -8,6 +8,42 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck source=/opt/syncgitconfig/lib/common.sh
 . "$SCRIPT_DIR/../lib/common.sh"
 
+dest_within_repo_or_die() {
+  local dest="$1" repo_root="$2" app="$3"
+
+  if [[ "$dest" == /* ]]; then
+    err "apps[$app].dest no puede ser absoluto: $dest"
+    exit 1
+  fi
+  if [[ "$dest" =~ (^|/)[.][.](|/|$) ]]; then
+    err "apps[$app].dest contiene '..': $dest"
+    exit 1
+  fi
+
+  local resolved=""
+  if command -v realpath >/dev/null 2>&1; then
+    resolved="$(realpath -m "$repo_root/$dest" 2>/dev/null || true)"
+  elif command -v python3 >/dev/null 2>&1; then
+    resolved="$(python3 - "$repo_root" "$dest" <<'PY'
+import os, sys
+base = sys.argv[1]
+sub = sys.argv[2]
+print(os.path.normpath(os.path.join(base, sub)))
+PY
+)"
+  else
+    resolved="$repo_root/$dest"
+  fi
+
+  case "$resolved" in
+    "$repo_root"|"$repo_root"/*) ;; 
+    *)
+      err "apps[$app].dest apunta fuera del repo: $dest"
+      exit 1
+      ;;
+  esac
+}
+
 main() {
   require_cmd rsync git install || exit 1
   load_config_yaml "$CONF_PATH"
@@ -20,6 +56,8 @@ main() {
   local STAGING_ROOT="$CFG_staging_path/$CFG_host"
   local REPO_HOST_ROOT="$CFG_repo_path/envs/$CFG_env/hosts/$CFG_host"
   mkdir -p "$STAGING_ROOT" "$REPO_HOST_ROOT"
+
+  local staging_changed=0
 
   local -a RSYNC_FLAGS; RSYNC_FLAGS=(-a --delete --itemize-changes)
   local -a EXCL; read -r -a EXCL <<<"$(rsync_exclude_flags)"
@@ -36,6 +74,8 @@ main() {
   for ((i=0; i<${#APP_NAMES[@]}; i++)); do
     local app="${APP_NAMES[$i]}" dest="${APP_DESTS[$i]}"
     [[ -z "$dest" ]] && dest="apps/$app"
+    APP_DESTS[$i]="$dest"
+    dest_within_repo_or_die "$dest" "$REPO_HOST_ROOT" "$app"
     local staged_app_root="$STAGING_ROOT/$dest"
     mkdir -p "$staged_app_root"
 
@@ -52,10 +92,27 @@ main() {
             if [[ "$src" == "$strip"* ]]; then
               rel="${src#"$strip"}"; [[ "$rel" == "/" ]] && rel=""
             fi
-            local tgt="$staged_app_root/$rel"
+            local tgt="$staged_app_root/${rel#/}"
             mkdir -p "$tgt"
-            log "DIR: $src -> $dest/$rel"
-            rsync "${RSYNC_FLAGS[@]}" "${EXCL[@]}" "$src/" "$tgt/" | tee -a "$LOG_FILE" || true
+            local display="$dest"
+            [[ -n "${rel#/}" ]] && display="$dest/${rel#/}"
+            local rsync_out=""
+            rsync_out="$(rsync "${RSYNC_FLAGS[@]}" "${EXCL[@]}" "$src/" "$tgt/" 2>&1)"
+            local rsync_rc=$?
+            if (( rsync_rc != 0 )); then
+              warn "DIR: $src -> $display (rsync falló con código $rsync_rc)"
+              if [[ -n "$rsync_out" ]]; then
+                while IFS= read -r line; do log "    $line"; done <<<"$rsync_out"
+              fi
+              continue
+            fi
+            if [[ -n "$rsync_out" ]]; then
+              staging_changed=1
+              log "DIR: $src -> $display (cambios)"
+              while IFS= read -r line; do log "    $line"; done <<<"$rsync_out"
+            else
+              log "DIR: $src -> $display (sin cambios)"
+            fi
           else
             warn "Directorio no existe: $src"
           fi
@@ -63,8 +120,15 @@ main() {
           if [[ -f "$src" ]]; then
             local rel="${src#"$strip"}"; rel="${rel#/}"   # quita leading /
             local tgt="$staged_app_root/$rel"
-            log "FILE: $src -> $dest/$rel"
-            install -D -m 0644 "$src" "$tgt"
+            local display="$dest"
+            [[ -n "$rel" ]] && display="$dest/$rel"
+            if [[ -f "$tgt" ]] && cmp -s "$src" "$tgt"; then
+              log "FILE: $src -> $display (sin cambios)"
+            else
+              install -D -m 0644 "$src" "$tgt"
+              staging_changed=1
+              log "FILE: $src -> $display (actualizado)"
+            fi
           else
             warn "Fichero no existe: $src"
           fi
@@ -79,8 +143,13 @@ main() {
   log "Sync STAGING -> REPO"
   rsync "${RSYNC_FLAGS[@]}" "${EXCL[@]}" "$STAGING_ROOT/" "$REPO_HOST_ROOT/" | tee -a "$LOG_FILE" || true
 
+  local staging_has_content=1
+  if [[ -z "$(find "$STAGING_ROOT" -mindepth 1 -type f -print -quit 2>/dev/null)" ]]; then
+    staging_has_content=0
+  fi
+
   # Commit/push (commit único; el mensaje incluye host y env)
-  git_commit_and_push "$CFG_repo_path" "$REPO_HOST_ROOT" "$CFG_env" "$CFG_host"
+  git_commit_and_push "$CFG_repo_path" "$REPO_HOST_ROOT" "$CFG_env" "$CFG_host" "$STAGING_ROOT" "$staging_changed" "$staging_has_content"
 
   ok "RUN completado."
   log "=== END $CFG_host ==="

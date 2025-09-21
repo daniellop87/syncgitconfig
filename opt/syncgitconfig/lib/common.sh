@@ -31,6 +31,7 @@ CFG_repo_path=""; CFG_remote_url=""; CFG_env="prod"; CFG_host=""; CFG_staging_pa
 CFG_cooldown_seconds=60
 AUTH_method=""; AUTH_username=""; AUTH_token_file=""; AUTH_token_inline=""
 EXCLUDES=()
+WATCH_PATHS=()
 APP_NAMES=()     # index -> app name
 APP_DESTS=()     # index -> dest path
 SRC_APPIDX=()    # parallel arrays: por cada source
@@ -39,9 +40,10 @@ SRC_TYPES=()
 SRC_STRIPS=()
 
 # Helpers para “inyectar” datos desde el parser
-_add_exclude() { EXCLUDES+=("$1"); }
-_add_app()     { APP_NAMES+=("$1"); APP_DESTS+=("$2"); }
-_add_source()  { SRC_APPIDX+=("$1"); SRC_PATHS+=("$2"); SRC_TYPES+=("$3"); SRC_STRIPS+=("${4:-}"); }
+_add_exclude()    { EXCLUDES+=("$1"); }
+_add_watch_path() { [[ -n "$1" ]] && WATCH_PATHS+=("$1"); }
+_add_app()        { APP_NAMES+=("$1"); APP_DESTS+=("$2"); }
+_add_source()     { SRC_APPIDX+=("$1"); SRC_PATHS+=("$2"); SRC_TYPES+=("$3"); SRC_STRIPS+=("${4:-}"); }
 
 # Parser YAML minimalista (formato estricto, 2 espacios por nivel)
 # Soporta:
@@ -54,7 +56,7 @@ load_config_yaml() {
   [[ -f "$yaml" ]] || { err "No existe config YAML: $yaml"; return 1; }
 
   # Resetea arrays y vars
-  EXCLUDES=(); APP_NAMES=(); APP_DESTS=(); SRC_APPIDX=(); SRC_PATHS=(); SRC_TYPES=(); SRC_STRIPS=()
+  EXCLUDES=(); WATCH_PATHS=(); APP_NAMES=(); APP_DESTS=(); SRC_APPIDX=(); SRC_PATHS=(); SRC_TYPES=(); SRC_STRIPS=()
   CFG_repo_path=""; CFG_remote_url=""; CFG_env="prod"; CFG_host=""; CFG_staging_path=""
   CFG_cooldown_seconds=60; AUTH_method=""; AUTH_username=""; AUTH_token_file=""; AUTH_token_inline=""
 
@@ -74,7 +76,7 @@ load_config_yaml() {
   }
 
   BEGIN{
-    in_auth=0; in_excl=0; in_apps=0; have_app=0; in_sources=0;
+    in_auth=0; in_excl=0; in_watch=0; in_apps=0; have_app=0; in_sources=0;
     app_idx=-1;
     src_path=""; src_type=""; src_strip="";
   }
@@ -96,7 +98,7 @@ load_config_yaml() {
 
     # nivel 0
     if (indent==0) {
-      in_auth=0; in_excl=0;
+      in_auth=0; in_excl=0; in_watch=0;
       if (key=="repo_path")    { print "CFG_repo_path=\"" val "\"" }
       else if (key=="remote_url"){ print "CFG_remote_url=\"" val "\"" }
       else if (key=="env")     { print "CFG_env=\"" val "\"" }
@@ -105,6 +107,7 @@ load_config_yaml() {
       else if (key=="cooldown" || key=="cooldown_seconds"){ print "CFG_cooldown_seconds=" val }
       else if (key=="auth")    { in_auth=1 }
       else if (key=="exclude") { in_excl=1 }
+      else if (key=="watch_paths") { in_watch=1 }
       else if (key=="apps")    { in_apps=1 }
       next
     }
@@ -116,6 +119,11 @@ load_config_yaml() {
         else if (key=="username")   print "AUTH_username=\"" val "\""
         else if (key=="token_file") print "AUTH_token_file=\"" val "\""
         else if (key=="token_inline") print "AUTH_token_inline=\"" val "\""
+        next
+      }
+      if (in_watch && match(line, /^[ ]*-[ ]+/)) {
+        pat=dequote(trim(substr(line, index(line,"-")+1)))
+        print "_add_watch_path \"" pat "\""
         next
       }
       if (in_excl && match(line, /^[ ]*-[ ]+/)) {
@@ -262,12 +270,21 @@ ensure_git_repo_ready() {
 
 # Añade y comitea cambios si los hay; empuja si PUSH=true (por defecto)
 git_commit_and_push() {
-  local repo="$1" hostroot="$2" env="$3" host="$4" app_tag="${5:-}"
+  local repo="$1" hostroot="$2" env="$3" host="$4" staging_root="${5:-}"
+  local staging_changed="${6:-0}" staging_has_content="${7:-1}" app_tag="${8:-}"
+
   git -C "$repo" add -A "$hostroot"
   if git -C "$repo" diff --cached --quiet "$hostroot"; then
-    ok "Sin cambios que comitear."
+    if [[ -n "$staging_root" && "$staging_has_content" == 0 ]]; then
+      warn "Sin cambios que comitear: staging ${staging_root} está vacío (¿sources sin archivos?)."
+    elif [[ "$staging_changed" == 0 ]]; then
+      ok "Sin cambios que comitear: ${hostroot} ya coincide con staging."
+    else
+      ok "Sin cambios que comitear."
+    fi
     return 0
   fi
+
   local msg="[auto][$env][$host]"
   [[ -n "$app_tag" ]] && msg="$msg[app:$app_tag]"
   msg="$msg snapshot @ $(ts)"

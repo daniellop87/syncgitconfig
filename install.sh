@@ -72,6 +72,24 @@ restore_git_ssl_verify(){
   fi
 }
 
+configure_git_identity(){
+  local repo="$1" host="$2"
+  [[ -d "$repo/.git" ]] || return 0
+
+  local default_name="Infra Backup Bot"
+  local default_email="infra-backup@${host}"
+
+  if ! git -C "$repo" config user.name >/dev/null 2>&1; then
+    git -C "$repo" config user.name "$default_name" || true
+    log "[INFO] Configurado git user.name=$default_name en $repo"
+  fi
+
+  if ! git -C "$repo" config user.email >/dev/null 2>&1; then
+    git -C "$repo" config user.email "$default_email" || true
+    log "[INFO] Configurado git user.email=$default_email en $repo"
+  fi
+}
+
 git_clone_repo(){
   local url="$1" dest="$2"
   local -a git_cmd
@@ -135,10 +153,15 @@ while (( "$#" )); do
       INSECURE=1
       if (( $# >= 2 )); then
         INSECURE_VALUE="${2,,}"
-        case "$INSECURE_VALUE" in
-          1|true|yes) shift ;;
-          0|false|no) INSECURE=0; shift ;;
-        esac
+        if [[ "$INSECURE_VALUE" == --* ]]; then
+          :
+        else
+          case "$INSECURE_VALUE" in
+            1|true|yes) shift ;;
+            0|false|no) INSECURE=0; shift ;;
+            *) c_red "Valor inválido para --insecure: ${INSECURE_VALUE}"; usage; exit 1 ;;
+          esac
+        fi
       fi
       ;;
     --insecure=*)
@@ -211,7 +234,7 @@ fi
 
 # Permisos de binarios (si existen)
 if [[ -d "$INSTALL_DIR/bin" ]]; then
-  chmod +x "$INSTALL_DIR"/bin/* || true
+  find "$INSTALL_DIR/bin" -maxdepth 1 -type f -exec chmod +x {} + 2>/dev/null || true
 else
   log "[INFO] No existe $INSTALL_DIR/bin, omito chmod."
 fi
@@ -288,6 +311,8 @@ if [[ -d "$REPO_PATH/.git" ]]; then
     git -C "$REPO_PATH" push -u origin main || c_red "[ERROR] Error al realizar push inicial. Verifica credenciales."
     log "[OK] Commit inicial realizado en el repo remoto."
   fi
+
+  configure_git_identity "$REPO_PATH" "$HOST_NAME"
 fi
 
 ### ========= Commit de verificación de sincronización =========

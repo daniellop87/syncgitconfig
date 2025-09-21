@@ -1,82 +1,97 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-CONF="/etc/syncgitconfig/syncgitconfig.yaml"
-LOGFILE="/var/log/syncgitconfig/syncgitconfig.log"
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+CONF_PATH="${CONF_PATH:-/etc/syncgitconfig/syncgitconfig.yaml}"
+# shellcheck source=/opt/syncgitconfig/lib/common.sh
+. "$SCRIPT_DIR/../lib/common.sh"
 
-now(){ date '+%F %T'; }
-log(){ echo "[$(now)] $*" | tee -a "$LOGFILE"; }
+main() {
+  [[ -f "$CONF_PATH" ]] || { err "No existe $CONF_PATH"; exit 1; }
 
-# Leer config mínima (sin depender de yq)
-val(){
-  local key="$1"
-  awk -v k="$key" '
-    function trim(s){ sub(/^[[:space:]]+/, "", s); sub(/[[:space:]]+$/, "", s); return s }
-    /^[[:space:]]*#/ {next}
-    {
-      line=$0
-      if (match(line, "^[[:space:]]*" k ":[[:space:]]*(.*)$", arr)) {
-        val=arr[1]
-        sub(/[[:space:]]+#.*/, "", val)
-        val=trim(val)
-        if (val ~ /^".*"$/) {
-          sub(/^"/, "", val); sub(/"$/, "", val)
-        } else if (val ~ /^'\''.*'\''$/) {
-          sub(/^'\''/, "", val); sub(/'\''$/, "", val)
-        }
-        print val
-        exit
-      }
-    }
-  ' "$CONF"
-}
+  load_config_yaml "$CONF_PATH" || exit 1
 
-[[ -f "$CONF" ]] || { log "[ERR] No existe $CONF"; exit 1; }
-REPO_PATH="$(val repo_path)"
-REMOTE_URL="$(val remote_url)"
-COOLDOWN="$(val cooldown)"; [[ -n "$COOLDOWN" ]] || COOLDOWN=60
+  local repo_path="$CFG_repo_path"
+  local cooldown="$CFG_cooldown_seconds"
 
-# Extraer array watch_paths (líneas siguientes con '- ')
-mapfile -t WATCH_PATHS < <(awk '/^watch_paths:/{flag=1;next} /^\S/{flag=0} flag&&/^-/{gsub("- ","",$0); print $0}' "$CONF")
-[[ ${#WATCH_PATHS[@]} -gt 0 ]] || WATCH_PATHS=("/etc/systemd")
-
-if [[ ! -d "$REPO_PATH/.git" ]]; then
-  log "[ERR] repo_path no es un checkout Git: $REPO_PATH"
-fi
-
-log "Watcher escuchando en: ${WATCH_PATHS[*]} (cooldown ${COOLDOWN}s)"
-last_run=0
-
-while true; do
-  inotifywait -q -e modify,create,delete,move "${WATCH_PATHS[@]}" >/dev/null 2>&1 || sleep 1
-  now_sec=$(date +%s)
-  if (( now_sec - last_run < COOLDOWN )); then
-    log "[WARN] Dentro de cooldown (${COOLDOWN}s); salto."
-    continue
+  local -a candidates=()
+  if (( ${#WATCH_PATHS[@]} )); then
+    candidates=("${WATCH_PATHS[@]}")
   fi
-  last_run=$now_sec
+  if (( ${#candidates[@]} == 0 )); then
+    warn "watch_paths vacío en YAML; usando fallback /etc/systemd"
+    candidates=("/etc/systemd")
+  fi
 
-  # Ejecutar todos los app-sync-* si existen
-  for s in /opt/syncgitconfig/bin/app-sync-*; do
-    [[ -x "$s" ]] && { log "[INFO] Ejecutando $(basename "$s")"; "$s" || log "[WARN] $(basename "$s") devolvió código $?"; }
+  local -a watch_list=()
+  for path in "${candidates[@]}"; do
+    [[ -z "$path" ]] && continue
+    if [[ -e "$path" ]]; then
+      watch_list+=("$path")
+    else
+      warn "Ruta en watch_paths no existe: $path"
+    fi
   done
 
-  # Commit y push si hay cambios
-  if [[ -d "$REPO_PATH/.git" ]]; then
-    if ! git -C "$REPO_PATH" diff --quiet || ! git -C "$REPO_PATH" diff --cached --quiet; then
-      git -C "$REPO_PATH" add -A
-      git -C "$REPO_PATH" commit -m "syncgitconfig: auto-commit $(date -Iseconds)"
-      if git -C "$REPO_PATH" push; then
-        log "[OK] Cambios empujados."
-      else
-        log "[WARN] Push falló; intentando pull --ff-only y reintento."
-        if git -C "$REPO_PATH" pull --ff-only && git -C "$REPO_PATH" push; then
-          log "[OK] Resuelto tras pull."
-        else
-          log "[ERR] No se pudo resolver el push."
-        fi
-      fi
-    fi
+  if (( ${#watch_list[@]} == 0 )); then
+    warn "Ninguna ruta de watch_paths es válida; usando fallback /etc/systemd"
+    watch_list=("/etc/systemd")
   fi
 
-done
+  if [[ ! -d "$repo_path/.git" ]]; then
+    err "repo_path no es un checkout Git válido: $repo_path"
+  fi
+
+  log "Watcher inicializado (cooldown ${cooldown}s)"
+  log "Rutas vigiladas:"
+  for path in "${watch_list[@]}"; do
+    log "  - $path"
+  done
+
+  local last_run=0
+
+  while true; do
+    if ! inotifywait -q -e modify,create,delete,move "${watch_list[@]}" >/dev/null 2>&1; then
+      sleep 1
+      continue
+    fi
+
+    local now_sec
+    now_sec="$(date +%s)"
+    if (( now_sec - last_run < cooldown )); then
+      log "[WARN] Dentro de cooldown (${cooldown}s); evento ignorado."
+      continue
+    fi
+    last_run=$now_sec
+
+    for script in /opt/syncgitconfig/bin/app-sync-*; do
+      [[ -x "$script" ]] || continue
+      log "[INFO] Ejecutando $(basename "$script")"
+      "$script" || {
+        local rc=$?
+        log "[WARN] $(basename "$script") devolvió código $rc"
+      }
+    done
+
+    if [[ -d "$repo_path/.git" ]]; then
+      if ! git -C "$repo_path" diff --quiet || ! git -C "$repo_path" diff --cached --quiet; then
+        git -C "$repo_path" add -A
+        git -C "$repo_path" -c user.name="Infra Backup Bot" -c user.email="infra-backup@${CFG_host}" commit -m "syncgitconfig: auto-commit $(date -Iseconds)"
+        if git -C "$repo_path" push; then
+          log "[OK] Cambios empujados."
+        else
+          log "[WARN] Push falló; intentando pull --ff-only y reintento."
+          if git -C "$repo_path" pull --ff-only && git -C "$repo_path" push; then
+            log "[OK] Resuelto tras pull."
+          else
+            log "[ERR] No se pudo resolver el push."
+          fi
+        fi
+      else
+        log "[INFO] Evento recibido pero sin cambios pendientes en Git."
+      fi
+    fi
+  done
+}
+
+main "$@"
