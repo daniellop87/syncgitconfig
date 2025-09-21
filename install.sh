@@ -181,6 +181,51 @@ systemctl daemon-reload
 systemctl enable --now syncgitconfig-watch.service >/dev/null 2>&1 || true
 
 # --- Status rápido ---
-/opt/syncgitconfig/bin/syncgitconfig-status || true
+#/opt/syncgitconfig/bin/syncgitconfig-status || true
 
 log "[ OK ] Instalación completa.\n\nResumen:\n  remote_url: $REMOTE_URL\n  repo_path : $REPO_PATH\n  yaml      : $CONF_YAML\n"
+# == Fin de instalación ==
+
+clear
+
+cat <<'EOM'
+========================================================
+✅ Instalación de syncgitconfig completada
+========================================================
+
+Próximos pasos recomendados:
+
+1. Revisa y edita el archivo de configuración:
+   sudo nano /etc/syncgitconfig/syncgitconfig.yaml
+
+   Ahí puedes definir:
+     - apps que quieres sincronizar
+     - rutas locales ↔ repositorio
+     - opciones de exclusión, etc.
+
+2. Comprueba el estado de los servicios systemd:
+   systemctl status syncgitconfig-watch.service
+   systemctl status syncgitconfig-sync.service
+
+3. Forzar la primera sincronización manual (opcional):
+   /opt/syncgitconfig/bin/syncgitconfig-sync --once
+
+4. Logs en tiempo real:
+   journalctl -u syncgitconfig-watch.service -f
+   journalctl -u syncgitconfig-sync.service -f
+
+--------------------------------------------------------
+El repositorio se ha clonado en:
+/opt/configs-host
+
+La configuración YAML está en:
+/etc/syncgitconfig/syncgitconfig.yaml
+
+Las credenciales están en:
+/etc/syncgitconfig/credentials/.git-credentials
+--------------------------------------------------------
+
+¡Ya puedes empezar a trabajar con GitOps de configuraciones!
+EOM
+
+
