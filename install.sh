@@ -211,6 +211,41 @@ if [[ -d "$REPO_PATH/.git" ]]; then
   fi
 fi
 
+### ========= Commit de verificación de sincronización =========
+if [[ -d "$REPO_PATH/.git" ]]; then
+  CHECK_FILE_NAME="syncgitconfig-install-check.txt"
+  CHECK_FILE_PATH="$REPO_PATH/$CHECK_FILE_NAME"
+  CHECK_TIMESTAMP="$(date -u +'%Y-%m-%dT%H:%M:%SZ')"
+  DETECTED_HOST="$(hostname -f 2>/dev/null || hostname 2>/dev/null || echo unknown)"
+
+  cat >"$CHECK_FILE_PATH" <<EOF
+syncgitconfig install verification
+Fecha UTC: $CHECK_TIMESTAMP
+Host configurado: $HOST_NAME
+Host detectado: $DETECTED_HOST
+Remote URL: $REMOTE_URL
+EOF
+
+  git -C "$REPO_PATH" add "$CHECK_FILE_NAME"
+
+  if [[ -n "$(git -C "$REPO_PATH" status --porcelain)" ]]; then
+    git -C "$REPO_PATH" -c user.name="Infra Backup Bot" -c user.email="infra-backup@${HOST_NAME}" commit -m "Install verification $CHECK_TIMESTAMP"
+
+    CURRENT_BRANCH="$(git -C "$REPO_PATH" rev-parse --abbrev-ref HEAD 2>/dev/null || echo main)"
+    if git -C "$REPO_PATH" rev-parse --abbrev-ref --symbolic-full-name '@{u}' &>/dev/null; then
+      git -C "$REPO_PATH" push 2>&1 | tee -a "$LOGFILE"
+    else
+      git -C "$REPO_PATH" push --set-upstream origin "$CURRENT_BRANCH" 2>&1 | tee -a "$LOGFILE"
+    fi
+
+    log "[OK] Commit de verificación sincronizado con el remoto."
+  else
+    log "[INFO] No hay cambios para el commit de verificación; se omite el push."
+  fi
+else
+  c_yellow "[WARN] No se pudo crear el commit de verificación: $REPO_PATH no es un repo Git válido."
+fi
+
 ### ========= Systemd (desde etc/systemd/system del repo) =========
 if [[ -d "$SRC_SYSTEMD_DIR" ]]; then
   cp -f "$SRC_SYSTEMD_DIR"/syncgitconfig*.service /etc/systemd/system/ 2>/dev/null || true
@@ -277,6 +312,9 @@ Plantilla copiada a destino:
 
 Configuración YAML:
   $YAML_PATH
+
+Archivo verificación:
+  $REPO_PATH/syncgitconfig-install-check.txt
 
 Credenciales (si configuradas):
   $CREDENTIALS_DIR/.git-credentials
