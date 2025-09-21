@@ -92,6 +92,13 @@ tail -n 50 /var/log/syncgitconfig/syncgitconfig.log
 
 Archivo: `/etc/syncgitconfig/syncgitconfig.yaml` (el **único** que editas).
 
+> ℹ️ Después de cambiar el YAML reinicia los servicios para que recojan la nueva configuración:
+>
+> ```bash
+> sudo systemctl restart syncgitconfig.service
+> sudo systemctl restart syncgitconfig-watch.service
+> ```
+
 ```yaml
 repo_path: /opt/configs-host
 remote_url: https://gitea.example.local/ORG/configs-host.git
@@ -169,7 +176,7 @@ apps:
   Arranca al boot, monitoriza rutas de `apps[].sources`, aplica **cooldown 60 s** y ejecuta el run.
 
 * **One-shot** manual: `syncgitconfig.service`
-  Ejecuta una pasada bajo demanda.
+  Ejecuta una pasada bajo demanda. Es de tipo *oneshot*: tras completarse aparece como `inactive (dead)` en `systemctl status`.
 
 Comandos útiles:
 
@@ -250,6 +257,9 @@ tail -f /var/log/syncgitconfig/syncgitconfig.log
   ```bash
   systemctl is-active syncgitconfig-watch.service
   ```
+
+* **Fallo TLS/CA al clonar o hacer pull**
+  Importa la CA corporativa en el sistema (por ejemplo, copia el `.crt` a `/usr/local/share/ca-certificates/` y ejecuta `update-ca-certificates`). Utiliza `--insecure` únicamente como medida temporal.
 
 * **`git push` pide credenciales / falla**
   Verifica `remote_url` y el contenido/permisos de `.git-credentials` (600).

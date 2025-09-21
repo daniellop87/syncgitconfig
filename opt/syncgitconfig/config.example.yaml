@@ -3,7 +3,7 @@
 # ============================================================
 # Edita con cuidado y reinicia servicios tras cambios:
 #   sudo systemctl restart syncgitconfig-watch.service
-#   sudo systemctl restart syncgitconfig-sync.service
+#   sudo systemctl restart syncgitconfig.service
 # ============================================================
 
 # ---- Parámetros globales ----
