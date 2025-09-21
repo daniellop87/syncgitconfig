@@ -1,4 +1,3 @@
-#!/usr/bin/env bash
 # common.sh — utilidades compartidas para syncgitconfig
 set -euo pipefail
 
@@ -46,7 +45,7 @@ _add_source()  { SRC_APPIDX+=("$1"); SRC_PATHS+=("$2"); SRC_TYPES+=("$3"); SRC_S
 
 # Parser YAML minimalista (formato estricto, 2 espacios por nivel)
 # Soporta:
-# - escalares al raíz: repo_path, remote_url, env, host, staging_path, cooldown_seconds
+# - escalares al raíz: repo_path, remote_url, env, host, staging_path, cooldown
 # - auth: method, username, token_file, token_inline
 # - exclude: lista simple "- patrón"
 # - apps: - name, dest, sources: - path, type, strip_prefix
@@ -94,7 +93,7 @@ load_config_yaml() {
       else if (key=="env")     { print "CFG_env=\"" val "\"" }
       else if (key=="host")    { print "CFG_host=\"" val "\"" }
       else if (key=="staging_path"){ print "CFG_staging_path=\"" val "\"" }
-      else if (key=="cooldown_seconds"){ print "CFG_cooldown_seconds=" val }
+      else if (key=="cooldown" || key=="cooldown_seconds"){ print "CFG_cooldown_seconds=" val }
       else if (key=="auth")    { in_auth=1 }
       else if (key=="exclude") { in_excl=1 }
       else if (key=="apps")    { in_apps=1 }
