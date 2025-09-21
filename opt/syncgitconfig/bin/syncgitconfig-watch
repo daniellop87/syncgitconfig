@@ -8,7 +8,28 @@ now(){ date '+%F %T'; }
 log(){ echo "[$(now)] $*" | tee -a "$LOGFILE"; }
 
 # Leer config mínima (sin depender de yq)
-val(){ awk -F': ' -v k="$1" '$1==k {print $2}' "$CONF" | tr -d "\"'"; }
+val(){
+  local key="$1"
+  awk -v k="$key" '
+    function trim(s){ sub(/^[[:space:]]+/, "", s); sub(/[[:space:]]+$/, "", s); return s }
+    /^[[:space:]]*#/ {next}
+    {
+      line=$0
+      if (match(line, "^[[:space:]]*" k ":[[:space:]]*(.*)$", arr)) {
+        val=arr[1]
+        sub(/[[:space:]]+#.*/, "", val)
+        val=trim(val)
+        if (val ~ /^".*"$/) {
+          sub(/^"/, "", val); sub(/"$/, "", val)
+        } else if (val ~ /^'\''.*'\''$/) {
+          sub(/^'\''/, "", val); sub(/'\''$/, "", val)
+        }
+        print val
+        exit
+      }
+    }
+  ' "$CONF"
+}
 
 [[ -f "$CONF" ]] || { log "[ERR] No existe $CONF"; exit 1; }
 REPO_PATH="$(val repo_path)"

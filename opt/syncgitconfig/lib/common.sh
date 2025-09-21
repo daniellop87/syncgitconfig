@@ -206,7 +206,38 @@ respect_cooldown_or_exit() {
 # Comprueba que el repo local existe y es Git
 ensure_git_repo_ready() {
   local repo="$1" remote="$2" cred_file="${3:-}"
-  [[ -d "$repo/.git" ]] || { err "repo_path no es un checkout Git: $repo"; return 1; }
+
+  if [[ ! -d "$repo/.git" ]]; then
+    if [[ -z "$remote" ]]; then
+      err "repo_path no es un checkout Git y remote_url no está definido: $repo"
+      return 1
+    fi
+
+    if [[ -d "$repo" ]]; then
+      if find "$repo" -mindepth 1 -maxdepth 1 -print -quit 2>/dev/null | grep -q .; then
+        err "repo_path existe pero no es un checkout Git y contiene archivos: $repo"
+        return 1
+      fi
+      rmdir "$repo" 2>/dev/null || true
+    fi
+
+    mkdir -p "$(dirname "$repo")"
+    log "Clonando repositorio remoto $remote en $repo"
+
+    local -a git_clone_cmd=(git)
+    if [[ -n "$cred_file" ]]; then
+      git_clone_cmd+=(-c "credential.helper=store --file=$cred_file")
+    fi
+    git_clone_cmd+=(clone "$remote" "$repo")
+
+    if ! "${git_clone_cmd[@]}" >>"$LOG_FILE" 2>&1; then
+      err "git clone falló para $remote"
+      return 1
+    fi
+
+    ok "Repositorio clonado en $repo"
+  fi
+
   # Configura helper de credenciales si se indicó token_file
   if [[ -n "$cred_file" ]]; then
     git -C "$repo" config credential.helper "store --file=$cred_file" || true
