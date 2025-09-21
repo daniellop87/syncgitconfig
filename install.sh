@@ -36,11 +36,41 @@ HOST_NAME="auto"
 COOLDOWN="60"
 NON_INTERACTIVE=0
 INSECURE=0
+RESTORE_GIT_SSL_VERIFY=0
+PREVIOUS_GIT_SSL_VERIFY_STATE=""
 
 c_green(){ printf "\033[1;32m%s\033[0m\n" "$*"; }
 c_yellow(){ printf "\033[1;33m%s\033[0m\n" "$*"; }
 c_red(){ printf "\033[1;31m%s\033[0m\n" "$*"; }
 log(){ echo "[$(date +'%F %T')] $*" | tee -a "$LOGFILE" >&2; }
+
+configure_insecure_git_ssl(){
+  (( INSECURE )) || return 0
+  command -v git >/dev/null 2>&1 || return 0
+
+  if (( ! RESTORE_GIT_SSL_VERIFY )); then
+    if git config --global --get http.sslVerify >/dev/null 2>&1; then
+      PREVIOUS_GIT_SSL_VERIFY_STATE="$(git config --global --get http.sslVerify 2>/dev/null || echo false)"
+    else
+      PREVIOUS_GIT_SSL_VERIFY_STATE="__unset__"
+    fi
+    RESTORE_GIT_SSL_VERIFY=1
+  fi
+
+  git config --global http.sslVerify false >/dev/null 2>&1 || true
+  log "[WARN] --insecure: http.sslVerify=false configurado temporalmente (global)."
+}
+
+restore_git_ssl_verify(){
+  (( RESTORE_GIT_SSL_VERIFY )) || return 0
+  command -v git >/dev/null 2>&1 || return 0
+
+  if [[ "$PREVIOUS_GIT_SSL_VERIFY_STATE" == "__unset__" ]]; then
+    git config --global --unset http.sslVerify >/dev/null 2>&1 || true
+  else
+    git config --global http.sslVerify "$PREVIOUS_GIT_SSL_VERIFY_STATE" >/dev/null 2>&1 || true
+  fi
+}
 
 git_clone_repo(){
   local url="$1" dest="$2"
@@ -88,6 +118,7 @@ EOF
 
 require_root(){ (( EUID == 0 )) || { c_red "Necesitas sudo/root."; exit 1; }; }
 trap 'c_red "⚠️  Error durante la instalación. Revisa el log: $LOGFILE"' ERR
+trap 'restore_git_ssl_verify' EXIT
 
 ### ========= Parseo de flags =========
 while (( "$#" )); do
@@ -156,6 +187,10 @@ if command -v apt-get >/dev/null 2>&1; then
   apt-get install -y "${PKGS[@]}" >>"$LOGFILE" 2>&1 || true
 else
   c_yellow "No hay apt-get; omito instalación de paquetes."
+fi
+
+if (( INSECURE )); then
+  configure_insecure_git_ssl
 fi
 
 ### ========= Desinstalación previa (si ya estaba instalado) =========
