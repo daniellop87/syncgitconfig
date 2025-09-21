@@ -7,11 +7,13 @@
 # ============================================================
 
 # ---- Parámetros globales ----
-env: __ENV__               # Entorno (prod, pre, dev, test)
-host: __HOST__             # Hostname (o "auto" para autodetectar)
-repo_path: __REPO_PATH__   # Ruta local donde se clona el repo
-remote_url: __REMOTE_URL__ # URL remota del repo (HTTPS/SSH)
-cooldown: __COOLDOWN__     # Intervalo en segundos entre syncs
+repo_path: __REPO_PATH__        # Ruta local donde se clona el repo
+remote_url: __REMOTE_URL__      # URL remota del repo (HTTPS/SSH)
+env: __ENV__                    # Entorno (prod, pre, dev, test)
+host: __HOST__                  # Hostname (o "auto" para autodetectar)
+repo_layout: hierarchical       # hierarchical (por defecto) | flat (escribe en la raíz del repo)
+cooldown_seconds: __COOLDOWN__  # Intervalo en segundos entre syncs
+# staging_path: /var/lib/syncgitconfig/staging  # Opcional: staging personalizado
 
 # ---- Modelo declarativo por entorno/host ----
 environments:
@@ -20,20 +22,35 @@ environments:
       __HOST__:
         apps:
           systemd:
+            # dest: apps/systemd                # Opcional: destino base por app
+            # strip_prefix: /etc/systemd/system # Opcional: strip común
             paths:
               - /etc/systemd/system
-          # phpipam:
+              # Plantilla ruta -> destino personalizado
+              # - src: /etc/ssh/sshd_config
+              #   dest: apps/ssh
+              #   type: file             # auto | file | dir
+              #   strip_prefix: /etc/ssh
+          # otro-ejemplo:
+          #   dest: apps/otra_app
           #   paths:
-          #     - /var/www/phpipam
+          #     - src: /opt/app/config
+          #       dest: apps/otra_app
+          #       type: dir
+          #       strip_prefix: /opt/app
 
 # ---- Watchers personalizados (opcional) ----
 # watch_paths:
 #   - /etc/systemd
+#   - /etc/ssh
+# (Se ignoran cuando repo_layout=flat y hay 'apps' declarados)
 
 # ---- Snapshot directo (legacy) ----
 # paths:
 #   - /etc/systemd/system
 #   - /var/www/phpipam
+#   # También admite archivos individuales:
+#   # - /etc/ssh/sshd_config
 
 # ---- Exclusiones (opcional) ----
 # exclude:
@@ -51,10 +68,19 @@ auth:
   # ssh_known_hosts: /etc/ssh/ssh_known_hosts
   # ssh_extra_args: "-o IdentitiesOnly=yes"
 
-# ---- Apps manuales (formato clásico) ----
+# ---- Apps manuales (formato clásico / layout plano) ----
+# repo_layout: flat
 # apps:
 #   - name: systemd
 #     dest: "apps/systemd"
 #     sources:
 #       - path: "/etc/systemd/system"
 #         type: dir
+#         strip_prefix: "/etc/systemd/system"
+#   - name: ficheros_sueltos
+#     dest: "files"
+#     sources:
+#       - path: "/etc/ssh/sshd_config"
+#         type: file
+#         strip_prefix: "/etc/ssh"
+#         # dest: "files/ssh"   # Opcional: destino específico para este fichero

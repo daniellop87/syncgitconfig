@@ -102,13 +102,23 @@ main() {
   require_cmd rsync git install || exit 1
   load_config_yaml "$CONF_PATH"
 
+  if [[ "$CFG_repo_layout" == "flat" && ${#APP_NAMES[@]} -gt 0 && ${#WATCH_PATHS[@]} -gt 0 ]]; then
+    warn "repo_layout=flat con 'apps' declarados: se ignoran 'watch_paths'."
+    WATCH_PATHS=()
+  fi
+
   acquire_lock_or_exit
   respect_cooldown_or_exit
 
   ensure_git_repo_ready "$CFG_repo_path" "$CFG_remote_url" "$AUTH_token_file"
 
   local STAGING_ROOT="$CFG_staging_path/$CFG_host"
-  local REPO_HOST_ROOT="$CFG_repo_path/envs/$CFG_env/hosts/$CFG_host"
+  local REPO_HOST_ROOT
+  if [[ "$CFG_repo_layout" == "flat" ]]; then
+    REPO_HOST_ROOT="$CFG_repo_path"
+  else
+    REPO_HOST_ROOT="$CFG_repo_path/envs/$CFG_env/hosts/$CFG_host"
+  fi
   mkdir -p "$STAGING_ROOT" "$REPO_HOST_ROOT"
 
   local staging_changed=0
@@ -125,8 +135,8 @@ main() {
   fi
 
   if (( ${#APP_NAMES[@]} == 0 && ${#EFFECTIVE_PATHS[@]} == 0 )); then
-    err "No se han definido ni 'paths' ni 'watch_paths' en $CONF_PATH."
-    err "Añade rutas (bloque 'apps' o 'paths') para generar snapshots."
+    err "No hay rutas declaradas en $CONF_PATH (bloques 'apps' o 'paths')."
+    err "Define rutas bajo 'apps'/'environments' o entradas en 'paths' para poder generar snapshots."
     exit 1
   fi
 
@@ -176,6 +186,7 @@ main() {
     for ((s=0; s<${#SRC_APPIDX[@]}; s++)); do
       if (( SRC_APPIDX[$s] == i )); then
         local src="${SRC_PATHS[$s]}" typ="${SRC_TYPES[$s]}" strip="${SRC_STRIPS[$s]}"
+        local dest_override="${SRC_DESTS[$s]}"
         local effective_type="$typ"
         local effective_strip="$strip"
 
@@ -192,16 +203,28 @@ main() {
           fi
         fi
 
+        local dest_base="$dest"
+        if [[ -n "$dest_override" ]]; then
+          dest_within_repo_or_die "$dest_override" "$REPO_HOST_ROOT" "$app"
+          if [[ "$dest_override" == "." ]]; then
+            dest_base="$dest_override"
+          else
+            dest_base="${dest_override%/}"
+          fi
+        fi
+        local staged_base="$STAGING_ROOT/$dest_base"
+        mkdir -p "$staged_base"
+
         if [[ "$effective_type" == "dir" ]]; then
           if [[ -d "$src" ]]; then
             local rel="/"
             if [[ "$src" == "$effective_strip"* ]]; then
               rel="${src#"$effective_strip"}"; [[ "$rel" == "/" ]] && rel=""
             fi
-            local tgt="$staged_app_root/${rel#/}"
+            local tgt="$staged_base/${rel#/}"
             mkdir -p "$tgt"
-            local display="$dest"
-            [[ -n "${rel#/}" ]] && display="$dest/${rel#/}"
+            local display="$dest_base"
+            [[ -n "${rel#/}" ]] && display="$dest_base/${rel#/}"
             local rsync_out=""
             rsync_out="$(rsync "${RSYNC_FLAGS[@]}" "${EXCL[@]}" "$src/" "$tgt/" 2>&1)"
             local rsync_rc=$?
@@ -225,9 +248,9 @@ main() {
         elif [[ "$effective_type" == "file" ]]; then
           if [[ -f "$src" ]]; then
             local rel="${src#"$effective_strip"}"; rel="${rel#/}"
-            local tgt="$staged_app_root/$rel"
-            local display="$dest"
-            [[ -n "$rel" ]] && display="$dest/$rel"
+            local tgt="$staged_base/$rel"
+            local display="$dest_base"
+            [[ -n "$rel" ]] && display="$dest_base/$rel"
             if [[ -f "$tgt" ]] && cmp -s "$src" "$tgt"; then
               log "FILE: $src -> $display (sin cambios)"
             else

@@ -27,7 +27,7 @@ require_cmd() {
 }
 
 # Variables globales pobladas tras cargar YAML
-CFG_repo_path=""; CFG_remote_url=""; CFG_env="prod"; CFG_host=""; CFG_staging_path=""
+CFG_repo_path=""; CFG_remote_url=""; CFG_env="prod"; CFG_host=""; CFG_staging_path=""; CFG_repo_layout="hierarchical"
 CFG_cooldown_seconds=60
 AUTH_method=""; AUTH_username=""; AUTH_token_file=""; AUTH_token_inline=""
 AUTH_netrc_file=""; AUTH_ssh_key_path=""; AUTH_ssh_known_hosts=""; AUTH_ssh_extra_args=""
@@ -44,6 +44,7 @@ SRC_APPIDX=()    # parallel arrays: por cada source
 SRC_PATHS=()
 SRC_TYPES=()
 SRC_STRIPS=()
+SRC_DESTS=()
 ENSURE_APP_LAST_IDX=-1
 
 # Helpers para “inyectar” datos desde el parser
@@ -51,9 +52,9 @@ _add_exclude()    { EXCLUDES+=("$1"); }
 _add_watch_path() { [[ -n "$1" ]] && WATCH_PATHS+=("$1"); }
 _add_path()       { [[ -n "$1" ]] && PATHS+=("$1"); }
 _add_app()        { APP_NAMES+=("$1"); APP_DESTS+=("$2"); }
-_add_source()     { SRC_APPIDX+=("$1"); SRC_PATHS+=("$2"); SRC_TYPES+=("$3"); SRC_STRIPS+=("${4:-}"); }
+_add_source()     { SRC_APPIDX+=("$1"); SRC_PATHS+=("$2"); SRC_TYPES+=("$3"); SRC_STRIPS+=("${4:-}"); SRC_DESTS+=("${5:-}"); }
 
-__env_add_path() { ENV_APP_RECORDS+=("$1|$2|$3|$4|$5|$6|$7"); }
+__env_add_path() { ENV_APP_RECORDS+=("$1|$2|$3|$4|$5|$6|$7|$8"); }
 
 ensure_app_entry() {
   local name="$1" dest="$2"
@@ -162,7 +163,7 @@ apply_environment_apps() {
   declare -A added_paths=()
   local entry
   for entry in "${ENV_APP_RECORDS[@]}"; do
-    IFS='|' read -r e_env e_host e_app e_dest e_strip e_path e_type <<<"$entry"
+    IFS='|' read -r e_env e_host e_app e_dest e_strip e_path e_type e_path_dest <<<"$entry"
     [[ -n "$e_env" ]] || continue
     [[ "$e_env" == "$env" ]] || continue
 
@@ -186,12 +187,13 @@ apply_environment_apps() {
     local type="$e_type"
     [[ -n "$type" ]] || type="auto"
     local strip="$e_strip"
-    local key="$idx|$e_path|$type|$strip"
+    local path_dest="$e_path_dest"
+    local key="$idx|$e_path|$type|$strip|$path_dest"
     if [[ -n "${added_paths[$key]:-}" ]]; then
       continue
     fi
     added_paths[$key]=1
-    _add_source "$idx" "$e_path" "$type" "$strip"
+    _add_source "$idx" "$e_path" "$type" "$strip" "$path_dest"
   done
 }
 
@@ -284,8 +286,8 @@ load_config_yaml() {
   [[ -f "$yaml" ]] || { err "No existe config YAML: $yaml"; return 1; }
 
   # Resetea arrays y vars
-  EXCLUDES=(); WATCH_PATHS=(); PATHS=(); APP_NAMES=(); APP_DESTS=(); SRC_APPIDX=(); SRC_PATHS=(); SRC_TYPES=(); SRC_STRIPS=()
-  CFG_repo_path=""; CFG_remote_url=""; CFG_env="prod"; CFG_host=""; CFG_staging_path=""
+  EXCLUDES=(); WATCH_PATHS=(); PATHS=(); APP_NAMES=(); APP_DESTS=(); SRC_APPIDX=(); SRC_PATHS=(); SRC_TYPES=(); SRC_STRIPS=(); SRC_DESTS=()
+  CFG_repo_path=""; CFG_remote_url=""; CFG_env="prod"; CFG_host=""; CFG_staging_path=""; CFG_repo_layout="hierarchical"
   CFG_cooldown_seconds=60; AUTH_method=""; AUTH_username=""; AUTH_token_file=""; AUTH_token_inline=""
   AUTH_netrc_file=""; AUTH_ssh_key_path=""; AUTH_ssh_known_hosts=""; AUTH_ssh_extra_args=""; AUTH_effective_method=""
   AUTH_GIT_ENV_MAP=(); AUTH_GIT_ENVS=(); ENV_APP_RECORDS=()
@@ -309,8 +311,9 @@ load_config_yaml() {
     in_auth=0; in_excl=0; in_watch=0; in_paths=0; in_apps=0; have_app=0; in_sources=0;
     in_envs=0; in_env_hosts=0; in_env_apps=0; in_env_app_paths=0;
     current_env=""; current_host=""; env_app=""; env_app_dest=""; env_app_strip=""; env_app_type="";
+    in_env_path_item=0; env_path=""; env_path_dest=""; env_path_strip=""; env_path_type="";
     app_idx=-1;
-    src_path=""; src_type=""; src_strip="";
+    src_path=""; src_type=""; src_strip=""; src_dest="";
   }
   # limpia comentarios y líneas vacías
   {
@@ -336,6 +339,7 @@ load_config_yaml() {
       else if (key=="env")     { print "CFG_env=\"" val "\"" }
       else if (key=="host")    { print "CFG_host=\"" val "\"" }
       else if (key=="staging_path"){ print "CFG_staging_path=\"" val "\"" }
+      else if (key=="repo_layout") { print "CFG_repo_layout=\"" val "\"" }
       else if (key=="cooldown" || key=="cooldown_seconds"){ print "CFG_cooldown_seconds=" val }
       else if (key=="auth")    { in_auth=1 }
       else if (key=="exclude") { in_excl=1 }
@@ -381,6 +385,12 @@ load_config_yaml() {
     }
 
     if (in_envs) {
+      if (in_env_app_paths && indent<=10) {
+        if (env_app!="" && env_path!="") {
+          print "__env_add_path \"" current_env "\" \"" current_host "\" \"" env_app "\" \"" env_app_dest "\" \"" env_path_strip "\" \"" env_path "\" \"" env_path_type "\" \"" env_path_dest "\""
+        }
+        env_path=""; env_path_dest=""; env_path_strip=""; env_path_type=""; in_env_path_item=0; in_env_app_paths=0;
+      }
       if (indent==2 && key!="") {
         current_env=key; in_env_hosts=0; in_env_apps=0; in_env_app_paths=0;
         next
@@ -404,15 +414,40 @@ load_config_yaml() {
         if (key=="dest") { env_app_dest=val; next }
         else if (key=="strip_prefix") { env_app_strip=val; next }
         else if (key=="type") { env_app_type=val; next }
-        else if (key=="paths") { in_env_app_paths=1; next }
+        else if (key=="paths") {
+          in_env_app_paths=1; in_env_path_item=0;
+          env_path=""; env_path_dest=""; env_path_strip=""; env_path_type="";
+          next
+        }
       }
-      if (in_env_app_paths && env_app!="" && match(line, /^[ ]*-[ ]+/)) {
-        pat=dequote(trim(substr(line, index(line,"-")+1)))
-        print "__env_add_path \"" current_env "\" \"" current_host "\" \"" env_app "\" \"" env_app_dest "\" \"" env_app_strip "\" \"" pat "\" \"" env_app_type "\""
-        next
-      }
-      if (indent<=8) {
-        in_env_app_paths=0
+      if (in_env_app_paths && env_app!="") {
+        if (match(line, /^[ ]*-[ ]+/)) {
+          if (env_path!="") {
+            print "__env_add_path \"" current_env "\" \"" current_host "\" \"" env_app "\" \"" env_app_dest "\" \"" env_path_strip "\" \"" env_path "\" \"" env_path_type "\" \"" env_path_dest "\""
+          }
+          env_path=""; env_path_dest=""; env_path_strip=env_app_strip; env_path_type=env_app_type; in_env_path_item=1;
+          entry=dequote(trim(substr(line, index(line,"-")+1)));
+          if (entry!="" && entry ~ /^[^:]+:[ ]*/) {
+            split(entry, kv, ":");
+            ekey=trim(kv[1]);
+            eval=trim(substr(entry, index(entry, ":")+1));
+            eval=dequote(eval);
+            if (ekey=="path" || ekey=="src") env_path=eval;
+            else if (ekey=="dest") env_path_dest=eval;
+            else if (ekey=="strip_prefix") env_path_strip=eval;
+            else if (ekey=="type") env_path_type=eval;
+          } else if (entry!="") {
+            env_path=entry;
+          }
+          next
+        }
+        if (in_env_path_item && key!="") {
+          if (key=="path" || key=="src") env_path=val;
+          else if (key=="dest") env_path_dest=val;
+          else if (key=="strip_prefix") env_path_strip=val;
+          else if (key=="type") env_path_type=val;
+          next
+        }
       }
     }
 
@@ -432,7 +467,7 @@ load_config_yaml() {
         if (key=="dest") {
           print "APP_DESTS[" app_idx "]=\"" val "\""
         } else if (key=="sources") {
-          in_sources=1; src_path=""; src_type=""; src_strip="";
+          in_sources=1; src_path=""; src_type=""; src_strip=""; src_dest="";
         }
         next
       }
@@ -441,20 +476,21 @@ load_config_yaml() {
         if (indent==6 && match(line, /^[ ]*-[ ]+path:[ ]*/)) {
           # si había un source acumulado, emítelo antes de empezar otro
           if (src_path!="") {
-            print "_add_source " app_idx " \"" src_path "\" \"" src_type "\" \"" src_strip "\""
-            src_path=""; src_type=""; src_strip="";
+            print "_add_source " app_idx " \"" src_path "\" \"" src_type "\" \"" src_strip "\" \"" src_dest "\""
+            src_path=""; src_type=""; src_strip=""; src_dest="";
           }
           src_path=dequote(trim(substr(line, RLENGTH+1))); next
         }
         if (indent==8 && key!="") {
           if (key=="type")        src_type=val;
           else if (key=="strip_prefix") src_strip=val;
+          else if (key=="dest") src_dest=val;
           next
         }
         # si volvemos a indentación <=4, cerramos el último source
         if (indent<=4 && src_path!="") {
-          print "_add_source " app_idx " \"" src_path "\" \"" src_type "\" \"" src_strip "\""
-          src_path=""; src_type=""; src_strip="";
+          print "_add_source " app_idx " \"" src_path "\" \"" src_type "\" \"" src_strip "\" \"" src_dest "\""
+          src_path=""; src_type=""; src_strip=""; src_dest="";
           # y como hemos salido de sources, no hacemos next: dejar fluir a tratar nueva app/prop
         }
       }
@@ -463,7 +499,10 @@ load_config_yaml() {
   END{
     # emite el último source si quedó pendiente
     if (src_path!="") {
-      print "_add_source " app_idx " \"" src_path "\" \"" src_type "\" \"" src_strip "\""
+      print "_add_source " app_idx " \"" src_path "\" \"" src_type "\" \"" src_strip "\" \"" src_dest "\""
+    }
+    if (env_app!="" && env_path!="") {
+      print "__env_add_path \"" current_env "\" \"" current_host "\" \"" env_app "\" \"" env_app_dest "\" \"" env_path_strip "\" \"" env_path "\" \"" env_path_type "\" \"" env_path_dest "\""
     }
   }'
 
@@ -475,6 +514,21 @@ load_config_yaml() {
   # Defaults
   [[ -z "$CFG_host" || "$CFG_host" == "auto" ]] && CFG_host="$(hostname -f 2>/dev/null || hostname)"
   [[ -z "$CFG_staging_path" ]] && CFG_staging_path="/var/lib/syncgitconfig/staging"
+
+  local layout_lc="${CFG_repo_layout,,}"
+  case "$layout_lc" in
+    ""|hierarchical|default|env_host|nested)
+      CFG_repo_layout="hierarchical"
+      ;;
+    flat|root)
+      CFG_repo_layout="flat"
+      ;;
+    *)
+      warn "repo_layout desconocido '$CFG_repo_layout'; usando 'hierarchical'."
+      CFG_repo_layout="hierarchical"
+      ;;
+  esac
+
   determine_auth_effective_method
   apply_environment_apps
   configure_git_auth_environment

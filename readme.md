@@ -104,6 +104,7 @@ repo_path: /opt/configs-host
 remote_url: https://gitea.example.local/ORG/configs-host.git
 env: prod
 host: auto
+repo_layout: hierarchical     # o "flat" para escribir en la raíz del repo
 staging_path: /var/lib/syncgitconfig/staging
 cooldown_seconds: 60
 
@@ -115,6 +116,10 @@ environments:
           systemd:
             paths:
               - /etc/systemd/system
+              # - src: /etc/ssh/sshd_config
+              #   dest: apps/ssh
+              #   type: file
+              #   strip_prefix: /etc/ssh
           # phpipam:
           #   paths:
           #     - /var/www/phpipam
@@ -154,10 +159,11 @@ exclude:
 #         strip_prefix: "/etc/systemd/system"
 ```
 
-* `environments.<env>.hosts.<host>.apps.<app>.paths` agrupa rutas bajo `apps/<app>` automáticamente.
-* `watch_paths` indica qué rutas vigilar; si no se define se derivan de `paths`/`apps`.
-* `paths` crea snapshots planos bajo `paths/` (modo legacy sencillo).
-* `apps[]` (formato clásico) sigue disponible para casos avanzados mezclando `dir` y `file`.
+* `repo_layout` define si el árbol se crea bajo `envs/<env>/hosts/<host>` (`hierarchical`, por defecto) o directamente en la raíz del repo (`flat`).
+* `environments.<env>.hosts.<host>.apps.<app>.paths` agrupa rutas bajo `apps/<app>` y acepta entradas simples o mapas `src`/`dest` para personalizar el destino relativo al repositorio.
+* `watch_paths` indica qué rutas vigilar; si no se define se derivan de `paths`/`apps`. Con `repo_layout: flat` y rutas declaradas en `apps` se ignora automáticamente.
+* `paths` crea snapshots planos bajo `paths/` (modo legacy sencillo) y admite directorios o archivos individuales.
+* `apps[]` (formato clásico) sigue disponible para casos avanzados mezclando `dir` y `file` o para layout plano manual.
 
 ---
 
@@ -184,7 +190,7 @@ syncgitconfig soporta tres flujos sin intervención manual:
 ## Servicios systemd
 
 * **Watcher** (inotify): `syncgitconfig-watch.service`
-  Arranca al boot, monitoriza rutas de `apps[].sources`, aplica **cooldown 60 s** y ejecuta el run.
+  Arranca al boot, monitoriza rutas de `apps[].sources`, aplica **cooldown 60 s** y ejecuta el run. Si staging y repo están vacíos lanza automáticamente `syncgitconfig-run --seed --no-cooldown` para generar el snapshot inicial.
 
 * **One-shot** manual: `syncgitconfig.service`
   Ejecuta una pasada bajo demanda. Es de tipo *oneshot*: tras completarse aparece como `inactive (dead)` en `systemctl status`.
@@ -216,6 +222,8 @@ Checkout local (ej.: `/opt/configs-host`):
                ├─ ssh/…          # desde /etc/ssh o archivos sueltos
                └─ monitoring/…   # desde /etc/nagios
 ```
+
+> Con `repo_layout: flat` los archivos se almacenan directamente bajo la raíz del repositorio (p. ej. `apps/…`, `paths/…`) sin los niveles `envs/<env>/hosts/<host>`.
 
 ---
 
@@ -279,7 +287,7 @@ tail -f /var/log/syncgitconfig/syncgitconfig.log
   systemctl is-active syncgitconfig-watch.service
   ```
 
-  * Si aparece `[ERR] No se han definido ni 'paths' ni 'watch_paths'`, añade rutas en el YAML (`paths`, `watch_paths` o `apps`).
+  * Si aparece `[ERR] No hay rutas declaradas (apps/paths)`, añade rutas en el YAML (`apps`/`environments` o `paths`).
   * Si el log indica `[INFO] staging vacío...`, ejecuta `/opt/syncgitconfig/bin/syncgitconfig-seed` para generar el snapshot inicial.
 
 * **Fallo TLS/CA al clonar o hacer pull**
