@@ -73,6 +73,14 @@ ensure_app_entry() {
   ENSURE_APP_LAST_IDX=$(( ${#APP_NAMES[@]} - 1 ))
 }
 
+repo_host_root_path() {
+  if [[ "$CFG_repo_layout" == "flat" ]]; then
+    printf '%s\n' "$CFG_repo_path"
+  else
+    printf '%s\n' "$CFG_repo_path/envs/$CFG_env/hosts/$CFG_host"
+  fi
+}
+
 build_command_string() {
   local out=""
   local part
@@ -531,6 +539,16 @@ load_config_yaml() {
 
   determine_auth_effective_method
   apply_environment_apps
+
+  if (( ${#APP_NAMES[@]} > 0 && ${#PATHS[@]} > 0 )); then
+    warn "Se ignoran 'paths' (modo legacy) porque hay 'apps' declarados."
+    PATHS=()
+  fi
+  if [[ "$CFG_repo_layout" == "flat" && ${#APP_NAMES[@]} -gt 0 && ${#WATCH_PATHS[@]} -gt 0 ]]; then
+    warn "repo_layout=flat con 'apps' declarados: se ignoran 'watch_paths'."
+    WATCH_PATHS=()
+  fi
+
   configure_git_auth_environment
   return 0
 }

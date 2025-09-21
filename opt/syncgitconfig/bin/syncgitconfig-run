@@ -102,11 +102,6 @@ main() {
   require_cmd rsync git install || exit 1
   load_config_yaml "$CONF_PATH"
 
-  if [[ "$CFG_repo_layout" == "flat" && ${#APP_NAMES[@]} -gt 0 && ${#WATCH_PATHS[@]} -gt 0 ]]; then
-    warn "repo_layout=flat con 'apps' declarados: se ignoran 'watch_paths'."
-    WATCH_PATHS=()
-  fi
-
   acquire_lock_or_exit
   respect_cooldown_or_exit
 
@@ -114,20 +109,22 @@ main() {
 
   local STAGING_ROOT="$CFG_staging_path/$CFG_host"
   local REPO_HOST_ROOT
-  if [[ "$CFG_repo_layout" == "flat" ]]; then
-    REPO_HOST_ROOT="$CFG_repo_path"
-  else
-    REPO_HOST_ROOT="$CFG_repo_path/envs/$CFG_env/hosts/$CFG_host"
-  fi
+  REPO_HOST_ROOT="$(repo_host_root_path)"
   mkdir -p "$STAGING_ROOT" "$REPO_HOST_ROOT"
+
+  if (( ${#APP_NAMES[@]} > 0 )); then
+    rm -rf "$STAGING_ROOT/paths"
+  fi
 
   local staging_changed=0
 
   RSYNC_FLAGS=(-a --delete --itemize-changes)
   read -r -a EXCL <<<"$(rsync_exclude_flags)"
 
-  local -a EFFECTIVE_PATHS
-  EFFECTIVE_PATHS=("${PATHS[@]}")
+  local -a EFFECTIVE_PATHS=()
+  if (( ${#APP_NAMES[@]} == 0 )); then
+    EFFECTIVE_PATHS=("${PATHS[@]}")
+  fi
   local using_watch_paths_as_sources=0
   if (( ${#EFFECTIVE_PATHS[@]} == 0 && ${#WATCH_PATHS[@]} > 0 && ${#APP_NAMES[@]} == 0 )); then
     EFFECTIVE_PATHS=("${WATCH_PATHS[@]}")

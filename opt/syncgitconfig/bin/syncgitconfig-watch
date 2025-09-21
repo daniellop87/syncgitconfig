@@ -11,11 +11,6 @@ main() {
 
   load_config_yaml "$CONF_PATH" || exit 1
 
-  if [[ "$CFG_repo_layout" == "flat" && ${#APP_NAMES[@]} -gt 0 && ${#WATCH_PATHS[@]} -gt 0 ]]; then
-    warn "repo_layout=flat con 'apps' declarados: se ignoran 'watch_paths'."
-    WATCH_PATHS=()
-  fi
-
   local repo_path="$CFG_repo_path"
   local cooldown="$CFG_cooldown_seconds"
 
@@ -69,11 +64,7 @@ main() {
 
   local STAGING_ROOT="$CFG_staging_path/$CFG_host"
   local REPO_HOST_ROOT
-  if [[ "$CFG_repo_layout" == "flat" ]]; then
-    REPO_HOST_ROOT="$CFG_repo_path"
-  else
-    REPO_HOST_ROOT="$CFG_repo_path/envs/$CFG_env/hosts/$CFG_host"
-  fi
+  REPO_HOST_ROOT="$(repo_host_root_path)"
 
   local staging_has_content=0
   if [[ -d "$STAGING_ROOT" && -n "$(find "$STAGING_ROOT" -mindepth 1 -type f -print -quit 2>/dev/null)" ]]; then
