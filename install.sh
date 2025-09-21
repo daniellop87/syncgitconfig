@@ -1,28 +1,32 @@
 #!/usr/bin/env bash
-# install.sh — Instalador de syncgitconfig
-# - Genera /etc/syncgitconfig/syncgitconfig.yaml desde config.example.yaml (con comentarios y placeholders)
-# - Guarda token (HTTPS) en /etc/syncgitconfig/credentials/.git-credentials si se provee
-# - Clona el repo a --repo-path
-# - Instala y arranca services systemd
-# - Soporta cert autofirmado (--insecure)
-# - Modo desatendido (--non-interactive)
-# - Muestra "próximos pasos" al final
+# install.sh — Instalador de syncgitconfig (adaptado a tu árbol de repo)
+# Estructura esperada en el repo:
+#   ./opt/syncgitconfig/bin/*               -> se copia a /opt/syncgitconfig/bin
+#   ./opt/syncgitconfig/config.example.yaml -> se copia y usa como plantilla
+#   ./etc/systemd/system/*.service          -> se copia a /etc/systemd/system
+#   ./etc/logrotate.d/syncgitconfig         -> se copia a /etc/logrotate.d (si existe)
 
 set -Eeuo pipefail
 
-### ========= Defaults =========
-INSTALL_DIR="/opt/syncgitconfig"                 # donde se clona/ubica este propio proyecto
+### ========= Rutas ORIGEN (en el repo) =========
+SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" &>/dev/null && pwd)"
+SRC_INSTALL_DIR="$SCRIPT_DIR/opt/syncgitconfig"
+SRC_SYSTEMD_DIR="$SCRIPT_DIR/etc/systemd/system"
+SRC_LOGROTATE="$SCRIPT_DIR/etc/logrotate.d/syncgitconfig" # puede no existir
+
+### ========= Rutas DESTINO (en el sistema) =========
+INSTALL_DIR="/opt/syncgitconfig"
 ETC_DIR="/etc/syncgitconfig"
 CREDENTIALS_DIR="$ETC_DIR/credentials"
 YAML_PATH="$ETC_DIR/syncgitconfig.yaml"
-TEMPLATE_PATH="$INSTALL_DIR/config.example.yaml"
+TEMPLATE_PATH_DEST="$INSTALL_DIR/config.example.yaml"
 LOG_DIR="/opt/logs/syncgitconfig"
 LOGFILE="$LOG_DIR/install.log"
 
-# Paquetes mínimos
+### ========= Paquetes mínimos =========
 PKGS=(git rsync inotify-tools ca-certificates dos2unix)
 
-# Flags y parámetros
+### ========= Flags / parámetros =========
 REMOTE_URL=""
 REPO_PATH=""
 TOKEN=""
@@ -33,7 +37,6 @@ COOLDOWN="60"
 NON_INTERACTIVE=0
 INSECURE=0
 
-### ========= Utils =========
 c_green(){ printf "\033[1;32m%s\033[0m\n" "$*"; }
 c_yellow(){ printf "\033[1;33m%s\033[0m\n" "$*"; }
 c_red(){ printf "\033[1;31m%s\033[0m\n" "$*"; }
@@ -46,7 +49,7 @@ Uso:
     --remote-url "https://GIT/Org/Repo.git" \\
     --repo-path "/opt/configs-host" \\
     --token "XXXX" \\
-    --user "git" \\
+    --user "daniel" \\
     --env "prod" \\
     --host "auto" \\
     --cooldown 60 \\
@@ -54,31 +57,20 @@ Uso:
 
 Parámetros:
   --remote-url        URL remota del repo (HTTPS/SSH)
-  --repo-path         Ruta local donde clonar el repo (ej. /opt/configs-host)
-  --token             (Opc.) Token HTTPS para credenciales guardadas
-  --user              (Opc.) Usuario asociado al token (ej. git o daniel)
+  --repo-path         Ruta local donde clonar el repo (p.ej. /opt/configs-host)
+  --token             (Opc.) Token HTTPS para credenciales
+  --user              (Opc.) Usuario asociado al token (p.ej. daniel o git)
   --env               Entorno (por defecto: prod)
   --host              Hostname o "auto" (por defecto: auto)
   --cooldown          Segundos entre comprobaciones (por defecto: 60)
-  --non-interactive   No pedir confirmaciones (instalación desatendida)
+  --non-interactive   No pedir confirmaciones
   --insecure          Deshabilita verificación SSL solo en la clonación
-  -h | --help         Esta ayuda
-
-Requisitos de repo:
-  - Plantilla:  config.example.yaml   (en la raíz del proyecto)
-  - Systemd:    systemd/syncgitconfig-*.service
-  - Binarios:   bin/ (opcional; si no existe se omite el chmod)
+  -h | --help         Ayuda
 EOF
 }
 
-require_root() {
-  if (( EUID != 0 )); then
-    c_red "Necesitas sudo/root para instalar."
-    exit 1
-  fi
-}
-
-trap 'c_red "⚠️  Se produjo un error. Revisa el log: $LOGFILE"' ERR
+require_root(){ (( EUID == 0 )) || { c_red "Necesitas sudo/root."; exit 1; }; }
+trap 'c_red "⚠️  Error durante la instalación. Revisa el log: $LOGFILE"' ERR
 
 ### ========= Parseo de flags =========
 while (( "$#" )); do
@@ -99,98 +91,84 @@ while (( "$#" )); do
 done
 
 require_root
-
-### ========= Preparación de carpetas/log =========
 mkdir -p "$LOG_DIR" "$ETC_DIR" "$CREDENTIALS_DIR"
 touch "$LOGFILE" 2>/dev/null || true
 
 log "Instalación iniciada."
 log "Infra:"
-log "  INSTALL_DIR = $INSTALL_DIR"
-log "  ETC_DIR     = $ETC_DIR"
-log "  YAML_PATH   = $YAML_PATH"
-log "  TEMPLATE    = $TEMPLATE_PATH"
-log "  LOGFILE     = $LOGFILE"
+log "  SRC_INSTALL_DIR = $SRC_INSTALL_DIR"
+log "  SRC_SYSTEMD_DIR = $SRC_SYSTEMD_DIR"
+log "  INSTALL_DIR     = $INSTALL_DIR"
+log "  ETC_DIR         = $ETC_DIR"
+log "  YAML_PATH       = $YAML_PATH"
+log "  TEMPLATE_DEST   = $TEMPLATE_PATH_DEST"
+log "  LOGFILE         = $LOGFILE"
 
-### ========= Validaciones básicas =========
-if [[ -z "$REMOTE_URL" || -z "$REPO_PATH" ]]; then
-  c_red "Faltan parámetros obligatorios: --remote-url y/o --repo-path"
-  usage
-  exit 1
-fi
+### ========= Validaciones =========
+[[ -n "$REMOTE_URL" ]] || { c_red "Falta --remote-url"; usage; exit 1; }
+[[ -n "$REPO_PATH"  ]] || { c_red "Falta --repo-path";  usage; exit 1; }
 
-if ! command -v apt-get >/dev/null 2>&1; then
-  c_yellow "No se encontró apt-get. Saltando instalación de paquetes..."
-else
+if command -v apt-get >/dev/null 2>&1; then
   log "Instalando paquetes con apt-get: ${PKGS[*]}"
   export DEBIAN_FRONTEND=noninteractive
   apt-get update -y >>"$LOGFILE" 2>&1 || true
   apt-get install -y "${PKGS[@]}" >>"$LOGFILE" 2>&1 || true
+else
+  c_yellow "No hay apt-get; omito instalación de paquetes."
 fi
 
-### ========= Copia de binarios (opcional) =========
-# Si el repo ya está en /opt/syncgitconfig, asumimos que este script se ejecuta desde ahí
-# y no hace falta copiar. Si lo quieres instalar "desde cualquier sitio" podrías copiarlo.
-if [[ ! -d "$INSTALL_DIR" ]]; then
-  # Intento deducir la ruta real del script
-  SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" &>/dev/null && pwd)"
-  if [[ "$SCRIPT_DIR" != "$INSTALL_DIR" ]]; then
-    log "Copiando proyecto a $INSTALL_DIR desde $SCRIPT_DIR"
-    mkdir -p "$INSTALL_DIR"
-    rsync -a --delete "$SCRIPT_DIR"/ "$INSTALL_DIR"/
-  fi
+### ========= Copiar proyecto a /opt/syncgitconfig =========
+if [[ -d "$SRC_INSTALL_DIR" ]]; then
+  log "Copiando $SRC_INSTALL_DIR -> $INSTALL_DIR"
+  mkdir -p "$INSTALL_DIR"
+  rsync -a --delete "$SRC_INSTALL_DIR"/ "$INSTALL_DIR"/
+else
+  c_red "[ERROR] No existe $SRC_INSTALL_DIR. Ejecuta este script desde la raíz del repo."
+  exit 1
 fi
 
-# Permisos de bin si existe
+# Permisos de binarios (si existen)
 if [[ -d "$INSTALL_DIR/bin" ]]; then
   chmod +x "$INSTALL_DIR"/bin/* || true
 else
   log "[INFO] No existe $INSTALL_DIR/bin, omito chmod."
 fi
 
-### ========= Generar YAML desde plantilla =========
-if [[ ! -f "$TEMPLATE_PATH" ]]; then
-  c_red "[ERROR] No se encontró la plantilla: $TEMPLATE_PATH"
-  c_yellow "Asegúrate de que config.example.yaml está en la raíz del repo."
+### ========= Generar YAML desde plantilla comentada =========
+if [[ ! -f "$TEMPLATE_PATH_DEST" ]]; then
+  c_red "[ERROR] Plantilla no encontrada en destino: $TEMPLATE_PATH_DEST"
+  c_yellow "Asegúrate de que opt/syncgitconfig/config.example.yaml existe en el repo."
   exit 1
 fi
 
-# Copiar plantilla comentada
-cp -f "$TEMPLATE_PATH" "$YAML_PATH"
-# Normalizar EOL si está disponible
+cp -f "$TEMPLATE_PATH_DEST" "$YAML_PATH"
 command -v dos2unix >/dev/null 2>&1 && dos2unix -q "$YAML_PATH" || true
 
-# Rellenar placeholders
-sed -i "s|__ENV__|${ENV_NAME}|g"               "$YAML_PATH"
-sed -i "s|__HOST__|${HOST_NAME}|g"             "$YAML_PATH"
-sed -i "s|__REPO_PATH__|${REPO_PATH}|g"        "$YAML_PATH"
-sed -i "s|__REMOTE_URL__|${REMOTE_URL}|g"      "$YAML_PATH"
-sed -i "s|__COOLDOWN__|${COOLDOWN}|g"          "$YAML_PATH"
+# Sustitución de placeholders
+sed -i "s|__ENV__|${ENV_NAME}|g"         "$YAML_PATH"
+sed -i "s|__HOST__|${HOST_NAME}|g"       "$YAML_PATH"
+sed -i "s|__REPO_PATH__|${REPO_PATH}|g"  "$YAML_PATH"
+sed -i "s|__REMOTE_URL__|${REMOTE_URL}|g" "$YAML_PATH"
+sed -i "s|__COOLDOWN__|${COOLDOWN}|g"    "$YAML_PATH"
 
 log "[ OK ] YAML actualizado en ${YAML_PATH}"
 
-### ========= Credenciales Git (HTTPS + token opcional) =========
-# Solo si vienen ambos: usuario y token
-if [[ -n "${TOKEN:-}" && -n "${USER_NAME:-}" ]]; then
+### ========= Credenciales Git (si HTTPS + token + user) =========
+if [[ -n "${TOKEN:-}" && -n "${USER_NAME:-}" && "$REMOTE_URL" =~ ^https:// ]]; then
   GIT_CREDS_PATH="$CREDENTIALS_DIR/.git-credentials"
-  # Construimos URL con credenciales incrustadas sólo para helper store
-  if [[ "$REMOTE_URL" =~ ^https:// ]]; then
-    echo "https://${USER_NAME}:${TOKEN}@${REMOTE_URL#https://}" > "$GIT_CREDS_PATH"
-    git config --global credential.helper "store --file=$GIT_CREDS_PATH"
-    chmod 600 "$GIT_CREDS_PATH"
-    log "[ OK ] Token guardado en $GIT_CREDS_PATH y helper configurado."
-  else
-    log "[WARN] --token/--user ignorados (la URL no es HTTPS)."
-  fi
+  echo "https://${USER_NAME}:${TOKEN}@${REMOTE_URL#https://}" > "$GIT_CREDS_PATH"
+  git config --global credential.helper "store --file=$GIT_CREDS_PATH"
+  chmod 600 "$GIT_CREDS_PATH"
+  log "[ OK ] Token guardado en $GIT_CREDS_PATH"
 else
-  log "[INFO] No se configuraron credenciales (falta --token o --user)."
+  log "[INFO] No se configuraron credenciales (faltan --token/--user o URL no HTTPS)."
 fi
 
 ### ========= Clonado del repo =========
 log "[INFO] Clonando repo en ${REPO_PATH}"
 mkdir -p "$REPO_PATH"
 if [[ -d "$REPO_PATH/.git" ]]; then
-  log "[INFO] Ya existe un repositorio en ${REPO_PATH}, se omite clonación."
+  log "[INFO] Ya existe un repositorio en ${REPO_PATH}, omito clonación."
 else
   if (( INSECURE )); then
     c_yellow "[WARN] --insecure activo: deshabilitando verificación SSL SOLO en esta clonación."
@@ -200,17 +178,24 @@ else
   fi
 fi
 
-### ========= Systemd units =========
-if [[ -d "$INSTALL_DIR/systemd" ]]; then
-  cp -f "$INSTALL_DIR/systemd"/syncgitconfig-*.service /etc/systemd/system/ 2>/dev/null || true
+### ========= Systemd (desde etc/systemd/system del repo) =========
+if [[ -d "$SRC_SYSTEMD_DIR" ]]; then
+  cp -f "$SRC_SYSTEMD_DIR"/syncgitconfig*.service /etc/systemd/system/ 2>/dev/null || true
   systemctl daemon-reload
+  # En tu repo existen: syncgitconfig.service y syncgitconfig-watch.service
+  systemctl enable syncgitconfig.service 2>/dev/null || true
   systemctl enable syncgitconfig-watch.service 2>/dev/null || true
-  systemctl enable syncgitconfig-sync.service 2>/dev/null || true
+  systemctl restart syncgitconfig.service 2>/dev/null || true
   systemctl restart syncgitconfig-watch.service 2>/dev/null || true
-  systemctl restart syncgitconfig-sync.service 2>/dev/null || true
   log "[ OK ] Units systemd instaladas y servicios activos."
 else
-  log "[WARN] No se encontró $INSTALL_DIR/systemd; omito instalación de units."
+  log "[WARN] No se encontró $SRC_SYSTEMD_DIR; omito instalación de units."
+fi
+
+### ========= logrotate (si existe en el repo) =========
+if [[ -f "$SRC_LOGROTATE" ]]; then
+  cp -f "$SRC_LOGROTATE" /etc/logrotate.d/syncgitconfig
+  log "[ OK ] logrotate instalado en /etc/logrotate.d/syncgitconfig"
 fi
 
 ### ========= Mensaje final =========
@@ -229,24 +214,25 @@ Parámetros aplicados:
   insecure   : $INSECURE
   no-interac.: $NON_INTERACTIVE
 
-Próximos pasos recomendados:
+Próximos pasos:
 
-1) Revisa y edita la configuración:
+1) Revisa/edita la configuración:
    sudo nano $YAML_PATH
 
-2) Comprueba los servicios:
+2) Comprueba servicios:
+   systemctl status syncgitconfig.service
    systemctl status syncgitconfig-watch.service
-   systemctl status syncgitconfig-sync.service
 
-3) Forzar una primera sincronización (opcional):
-   $INSTALL_DIR/bin/syncgitconfig-sync --once
+3) Forzar una primera sync (opcional):
+   $INSTALL_DIR/bin/syncgitconfig-run --once  || true
+   $INSTALL_DIR/bin/syncgitconfig-status      || true
 
 4) Logs en tiempo real:
+   journalctl -u syncgitconfig.service -f
    journalctl -u syncgitconfig-watch.service -f
-   journalctl -u syncgitconfig-sync.service -f
 
-Repositorio clonado:
-  $REPO_PATH
+Plantilla copiada a destino:
+  $TEMPLATE_PATH_DEST
 
 Configuración YAML:
   $YAML_PATH
