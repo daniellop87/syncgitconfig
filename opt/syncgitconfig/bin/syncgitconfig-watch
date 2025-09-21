@@ -1,41 +1,61 @@
 #!/usr/bin/env bash
-# syncgitconfig-watch — vigila rutas con inotify y dispara run con cooldown
 set -euo pipefail
-umask 022
 
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-# shellcheck source=/opt/syncgitconfig/lib/common.sh
-. "$SCRIPT_DIR/../lib/common.sh"
+CONF="/etc/syncgitconfig/syncgitconfig.yaml"
+LOGFILE="/var/log/syncgitconfig/syncgitconfig.log"
 
-main() {
-  require_cmd inotifywait || exit 1
-  load_config_yaml "$CONF_PATH"
+now(){ date '+%F %T'; }
+log(){ echo "[$(now)] $*" | tee -a "$LOGFILE"; }
 
-  # Construye el conjunto de paths a vigilar (directorio para dir; dirname para file)
-  declare -A WATCH=()
-  for ((s=0; s<${#SRC_APPIDX[@]}; s++)); do
-    local src="${SRC_PATHS[$s]}" typ="${SRC_TYPES[$s]}"
-    if [[ "$typ" == "dir" ]]; then
-      [[ -d "$src" ]] && WATCH["$src"]=1
-    else
-      local pdir; pdir="$(dirname "$src")"
-      [[ -d "$pdir" ]] && WATCH["$pdir"]=1
-    fi
+# Leer config mínima (sin depender de yq)
+val(){ awk -F': ' -v k="$1" '$1==k {print $2}' "$CONF" | tr -d "\"'"; }
+
+[[ -f "$CONF" ]] || { log "[ERR] No existe $CONF"; exit 1; }
+REPO_PATH="$(val repo_path)"
+REMOTE_URL="$(val remote_url)"
+COOLDOWN="$(val cooldown)"; [[ -n "$COOLDOWN" ]] || COOLDOWN=60
+
+# Extraer array watch_paths (líneas siguientes con '- ')
+mapfile -t WATCH_PATHS < <(awk '/^watch_paths:/{flag=1;next} /^\S/{flag=0} flag&&/^-/{gsub("- ","",$0); print $0}' "$CONF")
+[[ ${#WATCH_PATHS[@]} -gt 0 ]] || WATCH_PATHS=("/etc/systemd")
+
+if [[ ! -d "$REPO_PATH/.git" ]]; then
+  log "[ERR] repo_path no es un checkout Git: $REPO_PATH"
+fi
+
+log "Watcher escuchando en: ${WATCH_PATHS[*]} (cooldown ${COOLDOWN}s)"
+last_run=0
+
+while true; do
+  inotifywait -q -e modify,create,delete,move "${WATCH_PATHS[@]}" >/dev/null 2>&1 || sleep 1
+  now_sec=$(date +%s)
+  if (( now_sec - last_run < COOLDOWN )); then
+    log "[WARN] Dentro de cooldown (${COOLDOWN}s); salto."
+    continue
+  fi
+  last_run=$now_sec
+
+  # Ejecutar todos los app-sync-* si existen
+  for s in /opt/syncgitconfig/bin/app-sync-*; do
+    [[ -x "$s" ]] && { log "[INFO] Ejecutando $(basename "$s")"; "$s" || log "[WARN] $(basename "$s") devolvió código $?"; }
   done
 
-  if ((${#WATCH[@]}==0)); then
-    err "No hay rutas válidas para vigilar. Revisa $CONF_PATH"
-    exit 1
+  # Commit y push si hay cambios
+  if [[ -d "$REPO_PATH/.git" ]]; then
+    if ! git -C "$REPO_PATH" diff --quiet || ! git -C "$REPO_PATH" diff --cached --quiet; then
+      git -C "$REPO_PATH" add -A
+      git -C "$REPO_PATH" commit -m "syncgitconfig: auto-commit $(date -Iseconds)"
+      if git -C "$REPO_PATH" push; then
+        log "[OK] Cambios empujados."
+      else
+        log "[WARN] Push falló; intentando pull --ff-only y reintento."
+        if git -C "$REPO_PATH" pull --ff-only && git -C "$REPO_PATH" push; then
+          log "[OK] Resuelto tras pull."
+        else
+          log "[ERR] No se pudo resolver el push."
+        fi
+      fi
+    fi
   fi
 
-  local -a paths=("${!WATCH[@]}")
-  log "Watcher escuchando en: ${paths[*]} (cooldown ${CFG_cooldown_seconds}s)"
-
-  local EVENTS="close_write,move,create,delete,attrib"
-  inotifywait -m -r -q -e "$EVENTS" --format '%w%f %e' "${paths[@]}" | while read -r _line; do
-    # No ejecutamos cooldown aquí; lo gestiona el run
-    /opt/syncgitconfig/bin/syncgitconfig-run || true
-  done
-}
-
-main "$@"
+done
