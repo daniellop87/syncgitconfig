@@ -117,6 +117,12 @@ else
   c_yellow "No hay apt-get; omito instalación de paquetes."
 fi
 
+### ========= Desinstalación previa (si ya estaba instalado) =========
+log "Verificando instalación previa..."
+systemctl disable --now syncgitconfig-watch.service 2>/dev/null || true
+systemctl disable --now syncgitconfig.service 2>/dev/null || true
+log "[INFO] Servicios de syncgitconfig detenidos (si estaban activos)."
+
 ### ========= Copiar proyecto a /opt/syncgitconfig =========
 if [[ -d "$SRC_INSTALL_DIR" ]]; then
   log "Copiando $SRC_INSTALL_DIR -> $INSTALL_DIR"
@@ -178,6 +184,33 @@ else
   fi
 fi
 
+# Actualizar repo local al remoto y realizar commit inicial si hace falta
+if [[ -d "$REPO_PATH/.git" ]]; then
+  # Si el repo local existe o se acaba de clonar, asegurar que está actualizado
+  if git -C "$REPO_PATH" rev-parse --abbrev-ref HEAD &>/dev/null; then
+    log "[INFO] Actualizando repositorio local desde remoto (git pull)."
+    if git -C "$REPO_PATH" pull --ff-only >>"$LOGFILE" 2>&1; then
+      log "[OK] Repositorio local al día con remoto."
+    else
+      c_yellow "[WARN] Pull falló; aplicando stash y reset duro."
+      git -C "$REPO_PATH" stash push -u -m "syncgitconfig-autostash-install" || true
+      git -C "$REPO_PATH" fetch --prune
+      BRANCH_NAME="$(git -C "$REPO_PATH" rev-parse --abbrev-ref HEAD 2>/dev/null || echo main)"
+      git -C "$REPO_PATH" reset --hard "origin/$BRANCH_NAME"
+      log "[OK] Repositorio sincronizado con origin/$BRANCH_NAME."
+    fi
+  else
+    # Repositorio vacío (sin commits en remoto)
+    log "[INFO] Repositorio remoto vacío. Creando commit inicial de validación."
+    git -C "$REPO_PATH" checkout -b main
+    echo "Repositorio inicializado por syncgitconfig" > "$REPO_PATH/README-syncgitconfig.txt"
+    git -C "$REPO_PATH" add README-syncgitconfig.txt
+    git -C "$REPO_PATH" -c user.name="Infra Backup Bot" -c user.email="infra-backup@${HOST_NAME}" commit -m "Initial commit (syncgitconfig instalado)"
+    git -C "$REPO_PATH" push -u origin main || c_red "[ERROR] Error al realizar push inicial. Verifica credenciales."
+    log "[OK] Commit inicial realizado en el repo remoto."
+  fi
+fi
+
 ### ========= Systemd (desde etc/systemd/system del repo) =========
 if [[ -d "$SRC_SYSTEMD_DIR" ]]; then
   cp -f "$SRC_SYSTEMD_DIR"/syncgitconfig*.service /etc/systemd/system/ 2>/dev/null || true
@@ -197,6 +230,14 @@ if [[ -f "$SRC_LOGROTATE" ]]; then
   cp -f "$SRC_LOGROTATE" /etc/logrotate.d/syncgitconfig
   log "[ OK ] logrotate instalado en /etc/logrotate.d/syncgitconfig"
 fi
+
+### ========= Enlaces de comando para uso manual =========
+mkdir -p /usr/local/bin
+ln -sf "$INSTALL_DIR/bin/syncgitconfig-run" /usr/local/bin/syncgitconfig
+ln -sf "$INSTALL_DIR/bin/syncgitconfig-status" /usr/local/bin/syncgitconfig-status
+ln -sf "$INSTALL_DIR/bin/syncgitconfig-run" /usr/local/bin/sgc
+ln -sf "$INSTALL_DIR/bin/syncgitconfig-status" /usr/local/bin/sgc-status
+log "[ OK ] Enlaces /usr/local/bin/{syncgitconfig,sgc} creados."
 
 ### ========= Mensaje final =========
 clear
