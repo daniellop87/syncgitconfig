@@ -1,231 +1,263 @@
 #!/usr/bin/env bash
-set -euo pipefail
+# install.sh — Instalador de syncgitconfig
+# - Genera /etc/syncgitconfig/syncgitconfig.yaml desde config.example.yaml (con comentarios y placeholders)
+# - Guarda token (HTTPS) en /etc/syncgitconfig/credentials/.git-credentials si se provee
+# - Clona el repo a --repo-path
+# - Instala y arranca services systemd
+# - Soporta cert autofirmado (--insecure)
+# - Modo desatendido (--non-interactive)
+# - Muestra "próximos pasos" al final
 
-# =========================
-# Syncgitconfig Installer
-# =========================
-# Requisitos que instala: git rsync inotify-tools ca-certificates dos2unix
-# Crea/actualiza: /etc/syncgitconfig/syncgitconfig.yaml
-# Configura credenciales: /etc/syncgitconfig/credentials/.git-credentials
-# Instala service: /etc/systemd/system/syncgitconfig-watch.service
-# Copia binarios a: /opt/syncgitconfig/bin
-# Uso típico:
-#   sudo ./install.sh \
-#     --remote-url "https://GITEA_HOST/Org/Repo.git" \
-#     --user "USUARIO" \
-#     --token "TOKEN" \
-#     --repo-path "/opt/configs-host" \
-#     --env prod \
-#     --host auto \
-#     --cooldown 60 \
-#     --non-interactive \
-#     --insecure-skip-tls-verify true   # solo si cert no confiable
-#
-#   (o bien SSH sin token)
-#   sudo ./install.sh --remote-url "git@GITEA:Org/Repo.git" --repo-path "/opt/configs-host" --env prod --host auto --non-interactive
+set -Eeuo pipefail
 
+### ========= Defaults =========
+INSTALL_DIR="/opt/syncgitconfig"                 # donde se clona/ubica este propio proyecto
+ETC_DIR="/etc/syncgitconfig"
+CREDENTIALS_DIR="$ETC_DIR/credentials"
+YAML_PATH="$ETC_DIR/syncgitconfig.yaml"
+TEMPLATE_PATH="$INSTALL_DIR/config.example.yaml"
+LOG_DIR="/opt/logs/syncgitconfig"
+LOGFILE="$LOG_DIR/install.log"
+
+# Paquetes mínimos
+PKGS=(git rsync inotify-tools ca-certificates dos2unix)
+
+# Flags y parámetros
 REMOTE_URL=""
 REPO_PATH=""
 TOKEN=""
 USER_NAME=""
-ENVIRONMENT="dev"
-HOSTNAME_ARG="auto"
+ENV_NAME="prod"
+HOST_NAME="auto"
 COOLDOWN="60"
-NON_INTERACTIVE=false
-ALLOW_INSECURE_HTTP="false"
-INSECURE_SKIP_TLS_VERIFY="false"
+NON_INTERACTIVE=0
+INSECURE=0
 
-log(){ echo "[$(date '+%F %T')] $*"; }
-fail(){ echo "[ERR] $*" >&2; exit 1; }
+### ========= Utils =========
+c_green(){ printf "\033[1;32m%s\033[0m\n" "$*"; }
+c_yellow(){ printf "\033[1;33m%s\033[0m\n" "$*"; }
+c_red(){ printf "\033[1;31m%s\033[0m\n" "$*"; }
+log(){ echo "[$(date +'%F %T')] $*" | tee -a "$LOGFILE" >&2; }
 
-# --- Parseo args ---
-while [[ $# -gt 0 ]]; do
+usage() {
+  cat <<EOF
+Uso:
+  sudo ./install.sh \\
+    --remote-url "https://GIT/Org/Repo.git" \\
+    --repo-path "/opt/configs-host" \\
+    --token "XXXX" \\
+    --user "git" \\
+    --env "prod" \\
+    --host "auto" \\
+    --cooldown 60 \\
+    --non-interactive [--insecure]
+
+Parámetros:
+  --remote-url        URL remota del repo (HTTPS/SSH)
+  --repo-path         Ruta local donde clonar el repo (ej. /opt/configs-host)
+  --token             (Opc.) Token HTTPS para credenciales guardadas
+  --user              (Opc.) Usuario asociado al token (ej. git o daniel)
+  --env               Entorno (por defecto: prod)
+  --host              Hostname o "auto" (por defecto: auto)
+  --cooldown          Segundos entre comprobaciones (por defecto: 60)
+  --non-interactive   No pedir confirmaciones (instalación desatendida)
+  --insecure          Deshabilita verificación SSL solo en la clonación
+  -h | --help         Esta ayuda
+
+Requisitos de repo:
+  - Plantilla:  config.example.yaml   (en la raíz del proyecto)
+  - Systemd:    systemd/syncgitconfig-*.service
+  - Binarios:   bin/ (opcional; si no existe se omite el chmod)
+EOF
+}
+
+require_root() {
+  if (( EUID != 0 )); then
+    c_red "Necesitas sudo/root para instalar."
+    exit 1
+  fi
+}
+
+trap 'c_red "⚠️  Se produjo un error. Revisa el log: $LOGFILE"' ERR
+
+### ========= Parseo de flags =========
+while (( "$#" )); do
   case "$1" in
-    --remote-url)             REMOTE_URL="${2:-}"; shift 2 ;;
-    --repo-path)              REPO_PATH="${2:-}"; shift 2 ;;
-    --token)                  TOKEN="${2:-}"; shift 2 ;;
-    --user)                   USER_NAME="${2:-}"; shift 2 ;;
-    --env)                    ENVIRONMENT="${2:-}"; shift 2 ;;
-    --host)                   HOSTNAME_ARG="${2:-}"; shift 2 ;;
-    --cooldown)               COOLDOWN="${2:-}"; shift 2 ;;
-    --allow-insecure-http)    ALLOW_INSECURE_HTTP="${2:-false}"; shift 2 ;;
-    --insecure-skip-tls-verify) INSECURE_SKIP_TLS_VERIFY="${2:-false}"; shift 2 ;;
-    --non-interactive)        NON_INTERACTIVE=true; shift ;;
-    *) fail "Argumento no reconocido: $1" ;;
+    --remote-url)      shift; REMOTE_URL="${1:-}";;
+    --repo-path)       shift; REPO_PATH="${1:-}";;
+    --token)           shift; TOKEN="${1:-}";;
+    --user)            shift; USER_NAME="${1:-}";;
+    --env)             shift; ENV_NAME="${1:-}";;
+    --host)            shift; HOST_NAME="${1:-}";;
+    --cooldown)        shift; COOLDOWN="${1:-}";;
+    --non-interactive) NON_INTERACTIVE=1 ;;
+    --insecure)        INSECURE=1 ;;
+    -h|--help)         usage; exit 0 ;;
+    *) c_red "Opción desconocida: $1"; usage; exit 1 ;;
   esac
+  shift
 done
 
-[[ -n "$REMOTE_URL" ]] || fail "Debes pasar --remote-url"
-[[ -n "$REPO_PATH"  ]] || fail "Debes pasar --repo-path"
-[[ -n "$ENVIRONMENT" ]] || ENVIRONMENT="dev"
+require_root
 
-if [[ "$HOSTNAME_ARG" == "auto" ]]; then
-  HOSTNAME_ARG="$(hostname -s || hostname)"
+### ========= Preparación de carpetas/log =========
+mkdir -p "$LOG_DIR" "$ETC_DIR" "$CREDENTIALS_DIR"
+touch "$LOGFILE" 2>/dev/null || true
+
+log "Instalación iniciada."
+log "Infra:"
+log "  INSTALL_DIR = $INSTALL_DIR"
+log "  ETC_DIR     = $ETC_DIR"
+log "  YAML_PATH   = $YAML_PATH"
+log "  TEMPLATE    = $TEMPLATE_PATH"
+log "  LOGFILE     = $LOGFILE"
+
+### ========= Validaciones básicas =========
+if [[ -z "$REMOTE_URL" || -z "$REPO_PATH" ]]; then
+  c_red "Faltan parámetros obligatorios: --remote-url y/o --repo-path"
+  usage
+  exit 1
 fi
 
-# --- Instala dependencias ---
-log "Instalando paquetes con apt-get: git rsync inotify-tools ca-certificates dos2unix"
-apt-get update -y >/dev/null
-apt-get install -y git rsync inotify-tools ca-certificates dos2unix >/dev/null
-
-# --- Crear rutas base ---
-install -d -m 755 /opt/syncgitconfig/bin
-install -d -m 700 /etc/syncgitconfig/credentials
-install -d -m 755 /var/log/syncgitconfig
-
-# --- Copiar binarios desde el bundle si existen (opcional) ---
-# Asumimos que ejecutas desde la raíz del proyecto que contiene ./bin
-if [[ -d ./bin ]]; then
-  rsync -a ./bin/ /opt/syncgitconfig/bin/
-fi
-
-# --- Forzar LF en binarios por si vinieran con CRLF ---
-dos2unix /opt/syncgitconfig/bin/* >/dev/null 2>&1 || true
-chmod +x /opt/syncgitconfig/bin/* || true
-
-# --- Validación del remoto ---
-IS_SSH=false; IS_HTTPS=false; IS_HTTP=false
-if [[ "$REMOTE_URL" =~ ^[^@]+@[^:]+: ]] || [[ "$REMOTE_URL" =~ ^ssh:// ]]; then IS_SSH=true; fi
-if [[ "$REMOTE_URL" =~ ^https:// ]]; then IS_HTTPS=true; fi
-if [[ "$REMOTE_URL" =~ ^http:// ]]; then IS_HTTP=true; fi
-
-if $IS_HTTPS; then
-  [[ -n "$TOKEN" ]] || fail "Para HTTPS necesitas --token (PAT de Gitea/Git)"
-  [[ -n "$USER_NAME" ]] || fail "Para HTTPS necesitas --user (usuario ligado al token)"
-elif $IS_HTTP; then
-  [[ "$ALLOW_INSECURE_HTTP" == "true" ]] || fail "remote_url es HTTP sin TLS. Pasa --allow-insecure-http true (NO recomendado)."
-  # token opcional pero MUY mala idea enviarlo en claro
-elif $IS_SSH; then
-  if [[ -n "$TOKEN" || -n "$USER_NAME" ]]; then
-    log "[WARN] Has pasado --token/--user pero el remoto es SSH; se ignorarán."
-  fi
+if ! command -v apt-get >/dev/null 2>&1; then
+  c_yellow "No se encontró apt-get. Saltando instalación de paquetes..."
 else
-  fail "remote_url no reconocido. Usa https://..., http://... o SSH (git@host:org/repo.git)"
+  log "Instalando paquetes con apt-get: ${PKGS[*]}"
+  export DEBIAN_FRONTEND=noninteractive
+  apt-get update -y >>"$LOGFILE" 2>&1 || true
+  apt-get install -y "${PKGS[@]}" >>"$LOGFILE" 2>&1 || true
 fi
 
-# --- YAML de configuración ---
-CONF_YAML="/etc/syncgitconfig/syncgitconfig.yaml"
-{
-  echo "env: $ENVIRONMENT"
-  echo "host: $HOSTNAME_ARG"
-  echo "repo_path: $REPO_PATH"
-  echo "remote_url: $REMOTE_URL"
-  echo "cooldown: $COOLDOWN"
-  echo "watch_paths:"
-  echo "  - /etc/systemd"  # Puedes añadir más rutas en este array
-} > "$CONF_YAML"
-log "[ OK ] YAML actualizado en $CONF_YAML"
-
-# --- Credenciales (solo para HTTPS/HTTP) ---
-if $IS_HTTPS || $IS_HTTP; then
-  git config --global credential.helper "store --file=/etc/syncgitconfig/credentials/.git-credentials"
-  git config --global credential.useHttpPath true
-
-  # Extraer host base y ruta repo
-  # REMOTE_URL esperado: https://host/Org/Repo(.git)
-  base_host="$(echo "$REMOTE_URL" | awk -F'/' '{print $3}')"
-  repo_path_rel="${REMOTE_URL#https://$base_host}"
-
-  # Guardar credenciales a nivel host y a nivel repo
-  {
-    echo "https://$USER_NAME:$TOKEN@$base_host"
-    echo "https://$USER_NAME:$TOKEN@$base_host$repo_path_rel"
-  } > /etc/syncgitconfig/credentials/.git-credentials
-  chmod 600 /etc/syncgitconfig/credentials/.git-credentials
-  log "[ OK ] Token guardado en /etc/syncgitconfig/credentials/.git-credentials"
-
-  if [[ "$INSECURE_SKIP_TLS_VERIFY" == "true" ]]; then
-    git config --global http."https://$base_host/".sslVerify false
-    log "[WARN] TLS verify DESACTIVADO para https://$base_host/ (solo entorno interno)"
+### ========= Copia de binarios (opcional) =========
+# Si el repo ya está en /opt/syncgitconfig, asumimos que este script se ejecuta desde ahí
+# y no hace falta copiar. Si lo quieres instalar "desde cualquier sitio" podrías copiarlo.
+if [[ ! -d "$INSTALL_DIR" ]]; then
+  # Intento deducir la ruta real del script
+  SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" &>/dev/null && pwd)"
+  if [[ "$SCRIPT_DIR" != "$INSTALL_DIR" ]]; then
+    log "Copiando proyecto a $INSTALL_DIR desde $SCRIPT_DIR"
+    mkdir -p "$INSTALL_DIR"
+    rsync -a --delete "$SCRIPT_DIR"/ "$INSTALL_DIR"/
   fi
 fi
 
-# --- Clonado/config del repo ---
-if [[ ! -d "$REPO_PATH/.git" ]]; then
-  install -d -m 755 "$REPO_PATH"
-  if $IS_HTTPS; then
-    # Forzamos usuario en la URL remota para evitar prompts
-    REMOTE_WITH_USER="$(echo "$REMOTE_URL" | sed "s#^https://#https://$USER_NAME@#")"
-    log "[INFO] Clonando repo (HTTPS) en $REPO_PATH"
-    git clone "$REMOTE_WITH_USER" "$REPO_PATH" || fail "No se pudo clonar $REMOTE_URL"
+# Permisos de bin si existe
+if [[ -d "$INSTALL_DIR/bin" ]]; then
+  chmod +x "$INSTALL_DIR"/bin/* || true
+else
+  log "[INFO] No existe $INSTALL_DIR/bin, omito chmod."
+fi
+
+### ========= Generar YAML desde plantilla =========
+if [[ ! -f "$TEMPLATE_PATH" ]]; then
+  c_red "[ERROR] No se encontró la plantilla: $TEMPLATE_PATH"
+  c_yellow "Asegúrate de que config.example.yaml está en la raíz del repo."
+  exit 1
+fi
+
+# Copiar plantilla comentada
+cp -f "$TEMPLATE_PATH" "$YAML_PATH"
+# Normalizar EOL si está disponible
+command -v dos2unix >/dev/null 2>&1 && dos2unix -q "$YAML_PATH" || true
+
+# Rellenar placeholders
+sed -i "s|__ENV__|${ENV_NAME}|g"               "$YAML_PATH"
+sed -i "s|__HOST__|${HOST_NAME}|g"             "$YAML_PATH"
+sed -i "s|__REPO_PATH__|${REPO_PATH}|g"        "$YAML_PATH"
+sed -i "s|__REMOTE_URL__|${REMOTE_URL}|g"      "$YAML_PATH"
+sed -i "s|__COOLDOWN__|${COOLDOWN}|g"          "$YAML_PATH"
+
+log "[ OK ] YAML actualizado en ${YAML_PATH}"
+
+### ========= Credenciales Git (HTTPS + token opcional) =========
+# Solo si vienen ambos: usuario y token
+if [[ -n "${TOKEN:-}" && -n "${USER_NAME:-}" ]]; then
+  GIT_CREDS_PATH="$CREDENTIALS_DIR/.git-credentials"
+  # Construimos URL con credenciales incrustadas sólo para helper store
+  if [[ "$REMOTE_URL" =~ ^https:// ]]; then
+    echo "https://${USER_NAME}:${TOKEN}@${REMOTE_URL#https://}" > "$GIT_CREDS_PATH"
+    git config --global credential.helper "store --file=$GIT_CREDS_PATH"
+    chmod 600 "$GIT_CREDS_PATH"
+    log "[ OK ] Token guardado en $GIT_CREDS_PATH y helper configurado."
   else
-    log "[INFO] Clonando repo en $REPO_PATH"
-    git clone "$REMOTE_URL" "$REPO_PATH" || fail "No se pudo clonar $REMOTE_URL"
+    log "[WARN] --token/--user ignorados (la URL no es HTTPS)."
   fi
 else
-  log "[INFO] Repo ya existente: $REPO_PATH"
-  git -C "$REPO_PATH" remote set-url origin "$REMOTE_URL"
+  log "[INFO] No se configuraron credenciales (falta --token o --user)."
 fi
 
-# --- Templates de systemd (instalación) ---
-cat >/etc/systemd/system/syncgitconfig-watch.service <<'UNIT'
-[Unit]
-Description=syncgitconfig watcher (inotify)
-After=network-online.target
-Wants=network-online.target
+### ========= Clonado del repo =========
+log "[INFO] Clonando repo en ${REPO_PATH}"
+mkdir -p "$REPO_PATH"
+if [[ -d "$REPO_PATH/.git" ]]; then
+  log "[INFO] Ya existe un repositorio en ${REPO_PATH}, se omite clonación."
+else
+  if (( INSECURE )); then
+    c_yellow "[WARN] --insecure activo: deshabilitando verificación SSL SOLO en esta clonación."
+    GIT_SSL_NO_VERIFY=true git -c http.sslVerify=false clone "$REMOTE_URL" "$REPO_PATH" 2>&1 | tee -a "$LOGFILE"
+  else
+    git clone "$REMOTE_URL" "$REPO_PATH" 2>&1 | tee -a "$LOGFILE"
+  fi
+fi
 
-[Service]
-Type=simple
-ExecStart=/opt/syncgitconfig/bin/syncgitconfig-watch
-Restart=always
-RestartSec=2
+### ========= Systemd units =========
+if [[ -d "$INSTALL_DIR/systemd" ]]; then
+  cp -f "$INSTALL_DIR/systemd"/syncgitconfig-*.service /etc/systemd/system/ 2>/dev/null || true
+  systemctl daemon-reload
+  systemctl enable syncgitconfig-watch.service 2>/dev/null || true
+  systemctl enable syncgitconfig-sync.service 2>/dev/null || true
+  systemctl restart syncgitconfig-watch.service 2>/dev/null || true
+  systemctl restart syncgitconfig-sync.service 2>/dev/null || true
+  log "[ OK ] Units systemd instaladas y servicios activos."
+else
+  log "[WARN] No se encontró $INSTALL_DIR/systemd; omito instalación de units."
+fi
 
-[Install]
-WantedBy=multi-user.target
-UNIT
-
-log "[ OK ] Unit systemd instalada: syncgitconfig-watch.service"
-
-# --- Activar service ---
-systemctl daemon-reload
-systemctl enable --now syncgitconfig-watch.service >/dev/null 2>&1 || true
-
-# --- Status rápido ---
-#/opt/syncgitconfig/bin/syncgitconfig-status || true
-
-log "[ OK ] Instalación completa.\n\nResumen:\n  remote_url: $REMOTE_URL\n  repo_path : $REPO_PATH\n  yaml      : $CONF_YAML\n"
-# == Fin de instalación ==
-
+### ========= Mensaje final =========
 clear
-
-cat <<'EOM'
+cat <<EOM
 ========================================================
 ✅ Instalación de syncgitconfig completada
 ========================================================
 
+Parámetros aplicados:
+  remote_url : $REMOTE_URL
+  repo_path  : $REPO_PATH
+  env        : $ENV_NAME
+  host       : $HOST_NAME
+  cooldown   : $COOLDOWN
+  insecure   : $INSECURE
+  no-interac.: $NON_INTERACTIVE
+
 Próximos pasos recomendados:
 
-1. Revisa y edita el archivo de configuración:
-   sudo nano /etc/syncgitconfig/syncgitconfig.yaml
+1) Revisa y edita la configuración:
+   sudo nano $YAML_PATH
 
-   Ahí puedes definir:
-     - apps que quieres sincronizar
-     - rutas locales ↔ repositorio
-     - opciones de exclusión, etc.
-
-2. Comprueba el estado de los servicios systemd:
+2) Comprueba los servicios:
    systemctl status syncgitconfig-watch.service
    systemctl status syncgitconfig-sync.service
 
-3. Forzar la primera sincronización manual (opcional):
-   /opt/syncgitconfig/bin/syncgitconfig-sync --once
+3) Forzar una primera sincronización (opcional):
+   $INSTALL_DIR/bin/syncgitconfig-sync --once
 
-4. Logs en tiempo real:
+4) Logs en tiempo real:
    journalctl -u syncgitconfig-watch.service -f
    journalctl -u syncgitconfig-sync.service -f
 
+Repositorio clonado:
+  $REPO_PATH
+
+Configuración YAML:
+  $YAML_PATH
+
+Credenciales (si configuradas):
+  $CREDENTIALS_DIR/.git-credentials
+
+Log de instalación:
+  $LOGFILE
 --------------------------------------------------------
-El repositorio se ha clonado en:
-/opt/configs-host
-
-La configuración YAML está en:
-/etc/syncgitconfig/syncgitconfig.yaml
-
-Las credenciales están en:
-/etc/syncgitconfig/credentials/.git-credentials
---------------------------------------------------------
-
-¡Ya puedes empezar a trabajar con GitOps de configuraciones!
 EOM
 
-
+c_green "Listo."
+exit 0
