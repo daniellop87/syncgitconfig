@@ -14,6 +14,8 @@ set -Eeuo pipefail
 INSTALL_DIR="/opt/syncgitconfig"
 ETC_DIR="/etc/syncgitconfig"
 LOG_BASE_DIR="/opt/logs/syncgitconfig"
+STATE_DIR="/var/lib/syncgitconfig"
+CONFIG_FILE="$ETC_DIR/syncgitconfig.yaml"
 SYSTEMD_PATTERNS=( "/etc/systemd/system/syncgitconfig-*.service" )
 CRON_CANDIDATES=( "/etc/cron.d/syncgitconfig" )
 BIN_CANDIDATES=( "/usr/local/bin/syncgitconfig" "/usr/local/bin/syncgitconfig-status" "/usr/local/bin/sgc" "/usr/local/bin/sgc-status" )
@@ -26,7 +28,10 @@ DO_BACKUP=0
 BACKUP_DIR=""
 KEEP_LOGS=0
 PURGE=0
+PURGE_REPO=0
 SELF_DELETE=1
+REPO_PATH=""
+REPO_PATH_RESOLVED=""
 
 # Log
 TS="$(date +'%Y%m%d-%H%M%S')"
@@ -42,6 +47,42 @@ log(){ echo "[$(date +'%F %T')] $*" | tee -a "$LOGFILE" >&2; }
 run(){ if ((DRY_RUN)); then log "[dry-run] $*"; else log ">> $*"; eval "$@"; fi; }
 exists(){ test -e "$1"; }
 
+resolve_repo_path() {
+  local cfg="$CONFIG_FILE"
+  [[ -f "$cfg" ]] || return
+  local raw=""
+  raw="$(awk '
+    {
+      line=$0
+      sub(/[[:space:]]+#.*/, "", line)
+      if (line ~ /^[[:space:]]*repo_path[[:space:]]*:/) {
+        sub(/^[[:space:]]*repo_path[[:space:]]*:[[:space:]]*/, "", line)
+        print line
+        exit
+      }
+    }
+  ' "$cfg")"
+  raw="${raw%$'\r'}"
+  raw="$(printf '%s' "$raw" | sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//')"
+  if [[ -z "$raw" ]]; then
+    return
+  fi
+  if [[ "${raw:0:1}" == '"' && "${raw: -1}" == '"' ]]; then
+    raw="${raw:1:-1}"
+  elif [[ "${raw:0:1}" == "'" && "${raw: -1}" == "'" ]]; then
+    raw="${raw:1:-1}"
+  fi
+  if [[ "$raw" == ~* ]]; then
+    raw="${raw/#\~/$HOME}"
+  fi
+  REPO_PATH="$raw"
+  if command -v realpath >/dev/null 2>&1; then
+    REPO_PATH_RESOLVED="$(realpath -m "$raw" 2>/dev/null || echo "$raw")"
+  else
+    REPO_PATH_RESOLVED="$raw"
+  fi
+}
+
 usage() {
   cat <<EOF
 Uso: sudo $0 [opciones]
@@ -52,7 +93,8 @@ Opciones:
   --backup             Crea backup .tar.gz antes de borrar
   --backup-dir DIR     Carpeta destino del backup (por defecto: ${LOG_BASE_DIR}/backups)
   --keep-logs          Mantiene ${LOG_BASE_DIR}
-  --purge              BORRA TODO, incluidos logs (ignora --keep-logs)
+  --purge              BORRA TODO, incluidos logs y estado en ${STATE_DIR}
+  --purge-repo         Elimina el checkout local definido en repo_path (requiere --purge para limpiar estado)
   --no-self-delete     No se autodestruye al finalizar
   -h, --help           Muestra esta ayuda
 
@@ -61,6 +103,7 @@ Componentes objetivo:
   - Binarios/symlinks: ${BIN_CANDIDATES[*]}
   - Directorio app    : ${INSTALL_DIR}
   - Configuración     : ${ETC_DIR}
+  - Estado            : ${STATE_DIR}
   - Logs              : ${LOG_BASE_DIR}
   - Cron              : ${CRON_CANDIDATES[*]}
   - Procesos que contengan: ${PROCESS_GREP}
@@ -76,12 +119,15 @@ while (( "$#" )); do
     --backup-dir) shift; BACKUP_DIR="${1:-}";;
     --keep-logs) KEEP_LOGS=1 ;;
     --purge) PURGE=1 ;;
+    --purge-repo) PURGE_REPO=1 ;;
     --no-self-delete) SELF_DELETE=0 ;;
     -h|--help) usage; exit 0 ;;
     *) c_red "Opción desconocida: $1"; usage; exit 1 ;;
   esac
   shift
 done
+
+resolve_repo_path
 
 if (( EUID != 0 )); then
   c_red "Necesitas sudo/root."
@@ -99,8 +145,18 @@ if (( ! YES )); then
   echo
   c_yellow "Esto va a desinstalar syncgitconfig del sistema."
   ((DO_BACKUP)) && echo " - Se hará un BACKUP previo."
-  ((PURGE)) && echo " - PURGE: se borrarán también los logs y restos."
-  ((KEEP_LOGS)) && echo " - Mantendrás los logs en ${LOG_BASE_DIR}."
+  if (( PURGE )); then
+    echo " - PURGE: se eliminarán ${STATE_DIR} y ${LOG_BASE_DIR} (ignora --keep-logs)."
+  else
+    ((KEEP_LOGS)) && echo " - Mantendrás los logs en ${LOG_BASE_DIR}."
+  fi
+  if (( PURGE_REPO )); then
+    if [[ -n "$REPO_PATH_RESOLVED" ]]; then
+      echo " - PURGE-REPO: se borrará el checkout local en ${REPO_PATH_RESOLVED}."
+    else
+      echo " - PURGE-REPO: solicitado, pero no se detectó repo_path en ${CONFIG_FILE}."
+    fi
+  fi
   read -rp "¿Continuar? [y/N] " ans
   [[ "${ans,,}" == "y" || "${ans,,}" == "s" ]] || { log "Cancelado por usuario."; exit 0; }
 fi
@@ -180,14 +236,38 @@ log "Eliminando configuración: $ETC_DIR"
 [[ -e "$ETC_DIR" ]] && run "rm -rf '$ETC_DIR'"
 
 if (( PURGE )); then
+  log "PURGE activado: eliminando estado: $STATE_DIR"
+  [[ -e "$STATE_DIR" ]] && run "rm -rf '$STATE_DIR'"
   log "PURGE activado: eliminando logs: $LOG_BASE_DIR"
   [[ -e "$LOG_BASE_DIR" ]] && run "rm -rf '$LOG_BASE_DIR'"
 else
+  log "Conservando estado en $STATE_DIR (por defecto). Usa --purge para borrarlo."
   if (( KEEP_LOGS )); then
     log "Manteniendo logs en $LOG_BASE_DIR (por petición)."
   else
     # Por defecto, conservamos logs (mejor para auditoría). No hacemos nada.
     log "Conservando logs en $LOG_BASE_DIR (por defecto). Usa --purge para borrarlos."
+  fi
+fi
+
+if (( PURGE_REPO )); then
+  if [[ -n "$REPO_PATH_RESOLVED" && -e "$REPO_PATH_RESOLVED" ]]; then
+    if [[ "$REPO_PATH_RESOLVED" == "/" ]]; then
+      log "--purge-repo detectó repo_path='/' (se omite por seguridad)."
+    else
+      if [[ -d "$REPO_PATH_RESOLVED/.git" ]]; then
+        log "Eliminando repo local: $REPO_PATH_RESOLVED"
+        run "rm -rf '$REPO_PATH_RESOLVED'"
+      else
+        log "Repo_path no parece un checkout Git: $REPO_PATH_RESOLVED (se omite)."
+      fi
+    fi
+  else
+    if [[ -n "$REPO_PATH" ]]; then
+      log "Repo_path no encontrado en disco: $REPO_PATH (nada que borrar)."
+    else
+      log "--purge-repo solicitado pero no se detectó repo_path en ${CONFIG_FILE}."
+    fi
   fi
 fi
 

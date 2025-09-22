@@ -257,6 +257,8 @@ systemctl start syncgitconfig.service
 
 > Ejecuta `syncgitconfig-run --seed --no-cooldown` y copia todo el contenido de las rutas configuradas aunque staging/repo estén vacíos.
 
+> ℹ️ Las ejecuciones de `syncgitconfig-run` comparan los destinos declarados (apps/paths/watch_paths) y eliminan automáticamente del *staging* y del repositorio las carpetas que ya no figuran en el YAML. Tras quitar una app o ruta basta con lanzar un run para purgar los restos antiguos.
+
 **Logs**
 
 ```bash
@@ -307,13 +309,16 @@ tail -f /var/log/syncgitconfig/syncgitconfig.log
 
 ## Desinstalación
 
-Detener servicios y (opcionalmente) limpiar estado/logs:
+Usa el desinstalador empaquetado (`/opt/syncgitconfig/uninstall.sh`) para detener servicios y limpiar la instalación. Admite modo `--dry-run` y flags de purga:
 
 ```bash
-/opt/syncgitconfig/bin/syncgitconfig-uninstall
+sudo /opt/syncgitconfig/uninstall.sh --purge --purge-repo
 ```
 
-> No borra ni el **repo** ni la **config** a menos que lo hagas explícitamente.
+* `--purge` borra también `/var/lib/syncgitconfig` (staging, lock, cooldown) y `/opt/logs/syncgitconfig`.
+* `--purge-repo` elimina el checkout local indicado en `repo_path` cuando pertenece al host y contiene un `.git/`.
+
+Si prefieres un asistente mínimo existe `/opt/syncgitconfig/bin/syncgitconfig-uninstall`, que sólo detiene servicios y pregunta si quieres borrar estado/logs.
 
 ---
 
