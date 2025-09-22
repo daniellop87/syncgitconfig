@@ -289,6 +289,7 @@ tail -f /var/log/syncgitconfig/syncgitconfig.log
 
   * Si aparece `[ERR] No hay rutas declaradas (apps/paths)`, añade rutas en el YAML (`apps`/`environments` o `paths`).
   * Si el log indica `[INFO] staging vacío...`, ejecuta `/opt/syncgitconfig/bin/syncgitconfig-seed` para generar el snapshot inicial.
+  * Si ves avisos tipo `Detectadas N rutas ignoradas por .gitignore...`, elimina esos patrones del `.gitignore` del repo (o define exclusiones en el YAML). Git está descartando esos archivos y no llegarán al remoto hasta que lo ajustes.
 
 * **Fallo TLS/CA al clonar o hacer pull**
   Importa la CA corporativa en el sistema (por ejemplo, copia el `.crt` a `/usr/local/share/ca-certificates/` y ejecuta `update-ca-certificates`). Utiliza `--insecure` únicamente como medida temporal.
