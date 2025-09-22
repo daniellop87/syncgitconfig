@@ -12,6 +12,8 @@ main() {
     exit 1
   fi
 
+  ensure_https_token_credentials
+
   local repo="$CFG_repo_path"
   [[ -d "$repo/.git" ]] || { err "$repo no es un repo Git válido"; exit 1; }
 

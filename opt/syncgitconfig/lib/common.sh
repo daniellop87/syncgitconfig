@@ -181,6 +181,117 @@ configure_git_auth_environment() {
   done
 }
 
+token_inline_is_placeholder() {
+  local token="${1:-}"
+  if [[ -z "$token" ]]; then
+    return 0
+  fi
+
+  local trimmed="${token//[[:space:]]/}"
+  if [[ -z "$trimmed" ]]; then
+    return 0
+  fi
+
+  local upper="${trimmed^^}"
+  if [[ "$upper" == *REDACTED* ]]; then
+    return 0
+  fi
+  case "$upper" in
+    MASKED|HIDDEN|SECRET|TOBEFILLED|FILLME|SETME|PENDING|PLACEHOLDER)
+      return 0
+      ;;
+  esac
+
+  if [[ "$trimmed" =~ ^\*+$ ]]; then
+    return 0
+  fi
+  if [[ "$trimmed" =~ ^[Xx]+$ ]]; then
+    return 0
+  fi
+
+  return 1
+}
+
+ensure_https_token_credentials() {
+  if [[ "$AUTH_effective_method" != "https_token" ]]; then
+    return
+  fi
+
+  local cred_file_raw="${AUTH_token_file:-}"
+  if [[ -z "$cred_file_raw" ]]; then
+    warn "auth.method=https_token configurado pero falta auth.token_file en $CONF_PATH"
+    return
+  fi
+
+  local cred_file="$cred_file_raw"
+  if [[ "$cred_file" == ~* ]]; then
+    cred_file="${cred_file/#\~/$HOME}"
+  fi
+  AUTH_token_file="$cred_file"
+
+  local cred_dir
+  cred_dir="$(dirname "$cred_file")"
+  if [[ ! -d "$cred_dir" ]]; then
+    if ! mkdir -p "$cred_dir" 2>/dev/null; then
+      warn "No se pudo crear directorio de credenciales: $cred_dir"
+      return
+    fi
+  fi
+  chmod 700 "$cred_dir" 2>/dev/null || true
+
+  local url="$CFG_remote_url"
+  local scheme rest
+  if [[ "$url" == https://* ]]; then
+    scheme="https"
+    rest="${url#https://}"
+  elif [[ "$url" == http://* ]]; then
+    scheme="http"
+    rest="${url#http://}"
+  else
+    warn "auth.method=https_token pero remote_url no es HTTP(S): $(redact_remote_url "$url")"
+    return
+  fi
+
+  if [[ -z "$rest" ]]; then
+    warn "No se pudo derivar el host remoto desde remote_url: $(redact_remote_url "$url")"
+    return
+  fi
+
+  local token_value=""
+  if token_inline_is_placeholder "$AUTH_token_inline"; then
+    token_value=""
+  else
+    token_value="$AUTH_token_inline"
+  fi
+
+  local updated=0
+  if [[ -n "$token_value" ]]; then
+    local username="${AUTH_username:-token}"
+    local new_entry="$scheme://${username}:${token_value}@${rest}"
+    local current=""
+    if [[ -f "$cred_file" ]]; then
+      current="$(cat "$cred_file" 2>/dev/null || true)"
+      current="${current%$'\n'}"
+    fi
+    if [[ "$current" != "$new_entry" ]]; then
+      printf '%s\n' "$new_entry" >"$cred_file"
+      updated=1
+    fi
+  elif [[ ! -s "$cred_file" ]]; then
+    warn "auth.token_file ($cred_file) no existe o está vacío y no hay token_inline definido; git push fallará hasta que proporciones credenciales."
+  fi
+
+  if [[ -f "$cred_file" ]]; then
+    chmod 600 "$cred_file" 2>/dev/null || true
+  fi
+
+  if (( updated )); then
+    local remote_masked
+    remote_masked="$(redact_remote_url "$url")"
+    ok "Credenciales HTTPS actualizadas en $cred_file para $remote_masked"
+  fi
+}
+
 run_git() {
   if (( ${#AUTH_GIT_ENVS[@]} )); then
     env "${AUTH_GIT_ENVS[@]}" git "$@"
