@@ -293,10 +293,16 @@ ensure_https_token_credentials() {
 }
 
 run_git() {
+  local -a git_cmd=(git)
+
+  if [[ "$AUTH_effective_method" == "https_token" && -n "${AUTH_token_file:-}" ]]; then
+    git_cmd+=(-c "credential.helper=store --file=$AUTH_token_file")
+  fi
+
   if (( ${#AUTH_GIT_ENVS[@]} )); then
-    env "${AUTH_GIT_ENVS[@]}" git "$@"
+    env "${AUTH_GIT_ENVS[@]}" "${git_cmd[@]}" "$@"
   else
-    git "$@"
+    "${git_cmd[@]}" "$@"
   fi
 }
 
