@@ -39,8 +39,14 @@ main() {
   echo "Host:   ${host:-}"
   echo "Cooldown: ${cooldown:-}"
 
-  local staging="/var/lib/syncgitconfig/staging/${host:-unknown}"
-  echo "Staging: $staging"
+  local staging_display
+  if (( load_ok )); then
+    staging_display="$(staging_root_path)"
+  else
+    local inferred_host="${host:-$(hostname -f 2>/dev/null || hostname || echo unknown)}"
+    staging_display="/var/lib/syncgitconfig/staging/${inferred_host:-unknown}"
+  fi
+  echo "Staging: $staging_display"
 
   if (( load_ok )); then
     echo "Apps:   ${#APP_NAMES[@]}"

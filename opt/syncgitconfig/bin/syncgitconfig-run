@@ -13,10 +13,11 @@ SEED_MODE=0
 
 usage() {
   cat <<'USAGE'
-Uso: syncgitconfig-run [--no-cooldown] [--seed]
+Uso: syncgitconfig-run [--no-cooldown] [--seed] [--once]
 
   --no-cooldown  Ejecuta ignorando la ventana de cooldown configurada.
   --seed         Fuerza snapshot inicial (implica --no-cooldown).
+  --once         Alias de compatibilidad (no tiene efecto adicional).
 USAGE
 }
 
@@ -30,6 +31,9 @@ parse_args() {
       --seed)
         SEED_MODE=1
         BYPASS_COOLDOWN=1
+        ;;
+      --once)
+        # Alias de compatibilidad con versiones anteriores del wrapper/systemd
         ;;
       -h|--help)
         usage
@@ -163,7 +167,8 @@ main() {
 
   ensure_git_repo_ready "$CFG_repo_path" "$CFG_remote_url" "$AUTH_token_file"
 
-  local STAGING_ROOT="$CFG_staging_path/$CFG_host"
+  local STAGING_ROOT
+  STAGING_ROOT="$(staging_root_path)"
   local REPO_HOST_ROOT
   REPO_HOST_ROOT="$(repo_host_root_path)"
   mkdir -p "$STAGING_ROOT" "$REPO_HOST_ROOT"

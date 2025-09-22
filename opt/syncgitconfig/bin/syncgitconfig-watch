@@ -62,7 +62,8 @@ main() {
     err "repo_path no es un checkout Git válido: $repo_path"
   fi
 
-  local STAGING_ROOT="$CFG_staging_path/$CFG_host"
+  local STAGING_ROOT
+  STAGING_ROOT="$(staging_root_path)"
   local REPO_HOST_ROOT
   REPO_HOST_ROOT="$(repo_host_root_path)"
 
