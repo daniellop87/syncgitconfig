@@ -16,8 +16,9 @@ main() {
     "$SCRIPT_DIR/syncgitconfig-install"
   fi
 
+  systemctl restart syncgitconfig.service || true
   systemctl restart syncgitconfig-watch.service || true
-  ok "Reconfiguración aplicada."
+  ok "Reconfiguración aplicada y servicios reiniciados."
 }
 
 main "$@"
