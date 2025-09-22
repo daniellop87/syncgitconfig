@@ -783,6 +783,65 @@ git_commit_and_push() {
   local staging_changed="${6:-0}" staging_has_content="${7:-1}" app_tag="${8:-}"
 
   run_git -C "$repo" add -A "$hostroot"
+
+  local rel_hostroot="."
+  if [[ "$hostroot" == "$repo" ]]; then
+    rel_hostroot="."
+  elif [[ "$hostroot" == "$repo"/* ]]; then
+    rel_hostroot="${hostroot#$repo/}"
+    [[ -n "$rel_hostroot" ]] || rel_hostroot="."
+  fi
+
+  local status_output=""
+  local -a status_args=(status --short --ignored=matching -- "$rel_hostroot")
+  status_output="$(run_git -C "$repo" "${status_args[@]}" 2>/dev/null || true)"
+
+  local ignored_count=0 untracked_count=0
+  local -a ignored_preview=() untracked_preview=()
+  local status_line code path
+  while IFS= read -r status_line; do
+    [[ -z "$status_line" ]] && continue
+    code="${status_line:0:2}"
+    path="${status_line:3}"
+    case "$code" in
+      '!!')
+        ((ignored_count++))
+        if (( ${#ignored_preview[@]} < 10 )); then
+          ignored_preview+=("$path")
+        fi
+        ;;
+      '??')
+        ((untracked_count++))
+        if (( ${#untracked_preview[@]} < 10 )); then
+          untracked_preview+=("$path")
+        fi
+        ;;
+    esac
+  done <<<"$status_output"
+
+  if (( ignored_count )); then
+    warn "Detectadas $ignored_count rutas ignoradas por .gitignore tras el git add (no se versionarán automáticamente)."
+    local sample
+    for sample in "${ignored_preview[@]}"; do
+      log "    ignorado: $sample"
+    done
+    if (( ignored_count > ${#ignored_preview[@]} )); then
+      log "    ... y $((ignored_count - ${#ignored_preview[@]})) rutas adicionales"
+    fi
+    warn "Elimina esos patrones del .gitignore del repo o añade exclusiones en syncgitconfig.yaml si deseas omitirlos explícitamente."
+  fi
+
+  if (( untracked_count )); then
+    warn "Detectadas $untracked_count rutas sin seguimiento tras el git add."
+    local sample_untracked
+    for sample_untracked in "${untracked_preview[@]}"; do
+      log "    sin seguimiento: $sample_untracked"
+    done
+    if (( untracked_count > ${#untracked_preview[@]} )); then
+      log "    ... y $((untracked_count - ${#untracked_preview[@]})) rutas adicionales"
+    fi
+  fi
+
   if run_git -C "$repo" diff --cached --quiet "$hostroot"; then
     if [[ -n "$staging_root" && "$staging_has_content" == 0 ]]; then
       warn "Sin cambios que comitear: staging ${staging_root} está vacío."
