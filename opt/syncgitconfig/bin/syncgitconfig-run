@@ -639,7 +639,33 @@ main() {
     staging_has_content=0
   fi
 
-  git_commit_and_push "$CFG_repo_path" "$REPO_HOST_ROOT" "$CFG_env" "$CFG_host" "$STAGING_ROOT" "$staging_changed" "$staging_has_content"
+  local app_tag=""
+  if (( ${#APP_NAMES[@]} )); then
+    local changed_total=0
+    local -a changed_preview=()
+    for ((i=0; i<${#APP_NAMES[@]}; i++)); do
+      if (( ${APP_CHANGED_FLAGS[$i]:-0} )); then
+        ((changed_total++))
+        if (( ${#changed_preview[@]} < 3 )); then
+          local slug
+          slug="$(slugify_app_tag "${APP_NAMES[$i]}")"
+          if [[ -z "$slug" ]]; then
+            slug="app$changed_total"
+          fi
+          changed_preview+=("$slug")
+        fi
+      fi
+    done
+    if (( changed_total )); then
+      if (( changed_total > 3 )); then
+        changed_preview+=("mas$((changed_total - 3))")
+      fi
+      local IFS='+'
+      app_tag="${changed_preview[*]}"
+    fi
+  fi
+
+  git_commit_and_push "$CFG_repo_path" "$REPO_HOST_ROOT" "$CFG_env" "$CFG_host" "$STAGING_ROOT" "$staging_changed" "$staging_has_content" "$app_tag"
 
   ok "RUN completado."
   log "=== END $CFG_host ==="

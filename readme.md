@@ -228,6 +228,24 @@ Checkout local (ej.: `/opt/configs-host`):
             └─ …
 ```
 
+Ejemplo de `README.md` autogenerado dentro de `apps/systemd/`:
+
+```markdown
+# systemd
+
+* Destino en el repositorio: `apps/systemd`
+* Última sincronización: 2024-02-29 12:34:56 UTC
+
+## Orígenes sincronizados
+
+- `/etc/systemd/system`
+  - Tipo efectivo: dir
+  - Strip aplicado: `(auto)`
+  - Destino relativo: `apps/systemd`
+```
+
+> La fecha mostrada se actualiza en cada pasada que detecta cambios en la aplicación.
+
 > Con `repo_layout: hierarchical_host` se conserva el nivel `hosts/<host>`. Con `repo_layout: flat` los archivos se almacenan directamente bajo la raíz del repositorio (p. ej. `apps/…`, `paths/…`).
 
 ---

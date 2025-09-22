@@ -73,6 +73,39 @@ ensure_app_entry() {
   ENSURE_APP_LAST_IDX=$(( ${#APP_NAMES[@]} - 1 ))
 }
 
+slugify_app_tag() {
+  local input="${1:-}"
+  if [[ -z "$input" ]]; then
+    echo ""
+    return
+  fi
+
+  local slug=""
+  if command -v python3 >/dev/null 2>&1; then
+    slug="$(python3 - "$input" <<'PY'
+import re
+import sys
+import unicodedata
+
+text = sys.argv[1]
+text = unicodedata.normalize("NFKD", text)
+text = "".join(ch for ch in text if not unicodedata.combining(ch))
+text = text.lower()
+text = re.sub(r"[^a-z0-9]+", "-", text)
+text = text.strip("-")
+print(text[:80])
+PY
+)" || slug=""
+  fi
+
+  if [[ -z "$slug" ]]; then
+    slug="$(printf '%s' "$input" | tr '[:upper:]' '[:lower:]' | sed -E 's/[^a-z0-9]+/-/g; s/-+/-/g; s/^-+//; s/-+$//')"
+  fi
+
+  slug="${slug:0:80}"
+  echo "$slug"
+}
+
 repo_host_root_path() {
   case "$CFG_repo_layout" in
     flat)
@@ -786,6 +819,8 @@ ensure_git_repo_ready() {
 git_commit_and_push() {
   local repo="$1" hostroot="$2" env="$3" host="$4" staging_root="${5:-}"
   local staging_changed="${6:-0}" staging_has_content="${7:-1}" app_tag="${8:-}"
+
+  ensure_https_token_credentials
 
   run_git -C "$repo" add -A "$hostroot"
 
