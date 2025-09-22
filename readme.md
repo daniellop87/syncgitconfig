@@ -6,6 +6,7 @@ Backup **granular** de configuraciones por **servidor** usando **Git** (HTTPS co
 * **Modelo por app**: agrupas rutas como “apps” (systemd, ssh, monitoring, …) declaradas por entorno/host.
 * **Seguro**: excluyes secretos; token con permisos mínimos; sin `.git` en `/etc`.
 * **Automático**: watcher + cooldown (60 s) para evitar tormentas de commits.
+* **Documentado**: cada app genera un `README.md` con sus orígenes y la fecha de la última sincronización.
 
 ---
 
@@ -216,16 +217,48 @@ Checkout local (ej.: `/opt/configs-host`):
 └─ envs/
    └─ prod/
       └─ apps/
-         ├─ systemd/…      # desde /etc/systemd/system
-         ├─ ssh/…          # desde /etc/ssh o archivos sueltos
-         └─ monitoring/…   # desde /etc/nagios
+         ├─ systemd/
+         │  ├─ README.md   # resumen de orígenes + última sincronización
+         │  └─ *.service
+         ├─ ssh/
+         │  ├─ README.md
+         │  └─ sshd_config …
+         └─ monitoring/
+            ├─ README.md
+            └─ …
 ```
 
 > Con `repo_layout: hierarchical_host` se conserva el nivel `hosts/<host>`. Con `repo_layout: flat` los archivos se almacenan directamente bajo la raíz del repositorio (p. ej. `apps/…`, `paths/…`).
 
+Ejemplo de `README.md` generado para una app:
+
+```
+# systemd
+
+* Destino en el repositorio: `apps/systemd`
+* Última sincronización: 2025-09-22 17:06:55 UTC
+
+## Orígenes sincronizados
+
+- `/etc/systemd/system`
+  - Tipo efectivo: dir
+  - Strip aplicado: `/etc/systemd/system`
+  - Destino relativo: `apps/systemd`
+```
+
 ---
 
 ## Operativa habitual
+
+### Chuleta rápida
+
+| Acción | Comando | Detalle |
+| --- | --- | --- |
+| Revisar estado | `/opt/syncgitconfig/bin/syncgitconfig-status` | Muestra rutas vigiladas, remoto y último resultado del watcher. |
+| Ejecutar pasada inmediata | `systemctl start syncgitconfig.service` | Lanza `syncgitconfig-run` en modo *oneshot* con la configuración vigente. |
+| Reaplicar configuración tras editar el YAML | `/opt/syncgitconfig/bin/syncgitconfig-reconfigure` | Regenera credenciales si es necesario y reinicia `syncgitconfig.service` + `syncgitconfig-watch.service`. |
+| Sembrar snapshot inicial | `/opt/syncgitconfig/bin/syncgitconfig-seed` | Copia todas las rutas declaradas a *staging*/repo aunque estén vacíos. |
+| Revisar logs en vivo | `tail -f /var/log/syncgitconfig/syncgitconfig.log` | Útil para ver qué apps se sincronizan y cuándo. |
 
 **Estado rápido**
 
@@ -233,11 +266,13 @@ Checkout local (ej.: `/opt/configs-host`):
 /opt/syncgitconfig/bin/syncgitconfig-status
 ```
 
-**Reconfigurar remoto/token sin reinstalar**
+**Reaplicar configuración y reiniciar servicios**
 
 ```bash
 /opt/syncgitconfig/bin/syncgitconfig-reconfigure
 ```
+
+> Actualiza credenciales HTTPS/SSH, asegura el checkout local y reinicia el servicio `syncgitconfig.service` (one-shot) junto con el watcher para que la nueva configuración quede activa de inmediato.
 
 **Forzar una pasada manual**
 

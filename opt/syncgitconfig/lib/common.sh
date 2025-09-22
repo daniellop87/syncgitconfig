@@ -240,20 +240,23 @@ ensure_https_token_credentials() {
   chmod 700 "$cred_dir" 2>/dev/null || true
 
   local url="$CFG_remote_url"
-  local scheme rest
-  if [[ "$url" == https://* ]]; then
-    scheme="https"
-    rest="${url#https://}"
-  elif [[ "$url" == http://* ]]; then
-    scheme="http"
-    rest="${url#http://}"
-  else
-    warn "auth.method=https_token pero remote_url no es HTTP(S): $(redact_remote_url "$url")"
-    return
+  local scheme="" rest=""
+  if [[ "$url" == *://* ]]; then
+    local proto="${url%%://*}"
+    rest="${url#*://}"
+    local proto_lc="${proto,,}"
+    case "$proto_lc" in
+      https|http)
+        scheme="$proto_lc"
+        ;;
+      *)
+        scheme=""
+        ;;
+    esac
   fi
 
-  if [[ -z "$rest" ]]; then
-    warn "No se pudo derivar el host remoto desde remote_url: $(redact_remote_url "$url")"
+  if [[ -z "$scheme" || -z "$rest" ]]; then
+    warn "auth.method=https_token pero remote_url no es HTTP(S): $(redact_remote_url "$url")"
     return
   fi
 
@@ -347,16 +350,18 @@ apply_environment_apps() {
 
 determine_auth_effective_method() {
   local url="$CFG_remote_url"
-  local method="$AUTH_method"
+  local url_lc="${url,,}"
+  local method_raw="$AUTH_method"
+  local method="${method_raw,,}"
   local inline_credentials=0
-  if [[ "$url" =~ ^https?://[^/@]+@ ]] || [[ "$url" =~ ^https?://[^/]*:[^@]+@ ]]; then
+  if [[ "$url_lc" =~ ^https?://[^/@]+@ ]] || [[ "$url_lc" =~ ^https?://[^/]*:[^@]+@ ]]; then
     inline_credentials=1
   fi
 
   if [[ -z "$method" ]]; then
-    if [[ "$url" == git@* || "$url" == ssh://* ]]; then
+    if [[ "$url_lc" == git@* || "$url_lc" == ssh://* ]]; then
       method="ssh"
-    elif [[ "$url" =~ ^https?:// || "$url" =~ ^http:// ]]; then
+    elif [[ "$url_lc" =~ ^https?:// || "$url_lc" =~ ^http:// ]]; then
       if (( inline_credentials )); then
         method="https_inline"
       elif [[ -n "$AUTH_token_file" || -n "$AUTH_token_inline" ]]; then
@@ -783,6 +788,10 @@ git_commit_and_push() {
   local staging_changed="${6:-0}" staging_has_content="${7:-1}" app_tag="${8:-}"
 
   run_git -C "$repo" add -A "$hostroot"
+
+  if [[ "$AUTH_effective_method" == "https_token" ]]; then
+    ensure_https_token_credentials
+  fi
 
   local rel_hostroot="."
   if [[ "$hostroot" == "$repo" ]]; then
