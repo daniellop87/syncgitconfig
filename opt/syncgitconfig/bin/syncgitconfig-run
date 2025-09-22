@@ -165,6 +165,8 @@ main() {
   acquire_lock_or_exit
   respect_cooldown_or_exit
 
+  ensure_https_token_credentials
+
   ensure_git_repo_ready "$CFG_repo_path" "$CFG_remote_url" "$AUTH_token_file"
 
   local STAGING_ROOT

@@ -8,6 +8,7 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
 main() {
   load_config_yaml "$CONF_PATH"
+  ensure_https_token_credentials
   ensure_git_repo_ready "$CFG_repo_path" "$CFG_remote_url" "$AUTH_token_file"
 
   # Si hay token_inline, migrarlo de nuevo (por si se actualiza)
