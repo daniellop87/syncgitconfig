@@ -11,6 +11,8 @@ main() {
 
   load_config_yaml "$CONF_PATH" || exit 1
 
+  require_cmd inotifywait || exit 1
+
   local repo_path="$CFG_repo_path"
   local cooldown="$CFG_cooldown_seconds"
 
@@ -92,8 +94,10 @@ main() {
 
   local last_run=0
 
+  local -a inotify_args=(-q -r -e modify,create,delete,move)
+
   while true; do
-    if ! inotifywait -q -e modify,create,delete,move "${watch_list[@]}" >/dev/null 2>&1; then
+    if ! inotifywait "${inotify_args[@]}" "${watch_list[@]}" >/dev/null 2>&1; then
       sleep 1
       continue
     fi
