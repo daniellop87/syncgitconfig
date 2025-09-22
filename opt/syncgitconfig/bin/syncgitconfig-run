@@ -11,6 +11,14 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 BYPASS_COOLDOWN=0
 SEED_MODE=0
 
+declare -a SRC_EFFECTIVE_TYPES=()
+declare -a SRC_EFFECTIVE_STRIPS=()
+declare -a SRC_EFFECTIVE_DEST_BASE=()
+declare -a SRC_EFFECTIVE_TARGET_RELS=()
+declare -a APP_CHANGED_FLAGS=()
+RUN_TIMESTAMP=""
+__README_UPDATED=0
+
 usage() {
   cat <<'USAGE'
 Uso: syncgitconfig-run [--no-cooldown] [--seed] [--once]
@@ -156,6 +164,94 @@ compute_file_target_rel() {
   normalize_rel_path "$result"
 }
 
+write_app_readme() {
+  local app_idx="$1" app_name="$2" dest="$3" staged_app_root="$4" app_changed="$5" timestamp="$6"
+
+  __README_UPDATED=0
+
+  if [[ -z "$dest" || "$dest" == "." ]]; then
+    return
+  fi
+
+  local readme_path="$staged_app_root/README.md"
+  local last_sync_existing=""
+  if [[ -f "$readme_path" ]]; then
+    last_sync_existing="$(grep -E '^Última sincronización:' "$readme_path" 2>/dev/null | head -n1 | cut -d':' -f2- | sed 's/^ *//')"
+  fi
+
+  local last_sync_value="$last_sync_existing"
+  if (( app_changed )); then
+    last_sync_value="$timestamp"
+  elif [[ -z "$last_sync_existing" ]]; then
+    last_sync_value="$timestamp"
+  fi
+
+  local tmp_file
+  tmp_file="$(mktemp "${TMPDIR:-/tmp}/syncgitconfig-app-readme.XXXXXX")"
+
+  {
+    printf '# %s\n\n' "$app_name"
+    printf '* Destino en el repositorio: `%s`\n' "$dest"
+    if [[ -n "$last_sync_value" ]]; then
+      printf '* Última sincronización: %s\n\n' "$last_sync_value"
+    else
+      printf '* Última sincronización: pendiente\n\n'
+    fi
+    printf '## Orígenes sincronizados\n\n'
+
+    local found_source=0
+    for ((idx=0; idx<${#SRC_APPIDX[@]}; idx++)); do
+      if (( SRC_APPIDX[idx] == app_idx )); then
+        found_source=1
+        local src="${SRC_PATHS[$idx]}"
+        local typ="${SRC_EFFECTIVE_TYPES[$idx]:-${SRC_TYPES[$idx]}}"
+        [[ -n "$typ" ]] || typ="auto"
+        local strip_value="${SRC_EFFECTIVE_STRIPS[$idx]:-${SRC_STRIPS[$idx]}}"
+        local strip_display="$strip_value"
+        if [[ -z "$strip_display" ]]; then
+          strip_display="(auto)"
+        else
+          strip_display="\`$strip_display\`"
+        fi
+        local dest_base="${SRC_EFFECTIVE_DEST_BASE[$idx]:-$dest}"
+        [[ -n "$dest_base" ]] || dest_base="$dest"
+        local target_display="${SRC_EFFECTIVE_TARGET_RELS[$idx]:-}"
+        if [[ -n "$target_display" ]]; then
+          target_display="\`$target_display\`"
+        else
+          if [[ -n "$dest_base" && "$dest_base" != "." ]]; then
+            target_display="\`$dest_base\`"
+          elif [[ "$dest_base" == "." ]]; then
+            target_display="\`.\` (raíz del repositorio)"
+          else
+            target_display="(carpeta del app)"
+          fi
+        fi
+        local declared_dest="${SRC_DESTS[$idx]}"
+        printf '- `%s`\n' "$src"
+        printf '  - Tipo efectivo: %s\n' "$typ"
+        printf '  - Strip aplicado: %s\n' "$strip_display"
+        printf '  - Destino relativo: %s\n' "$target_display"
+        if [[ -n "$declared_dest" && "$declared_dest" != "." ]]; then
+          printf '  - Destino personalizado declarado: `%s`\n' "$declared_dest"
+        fi
+        printf '\n'
+      fi
+    done
+
+    if (( ! found_source )); then
+      printf '_Sin rutas declaradas._\n'
+    fi
+  } >"$tmp_file"
+
+  if [[ ! -f "$readme_path" ]] || ! cmp -s "$tmp_file" "$readme_path"; then
+    install -D -m 0644 "$tmp_file" "$readme_path"
+    __README_UPDATED=1
+  fi
+
+  rm -f "$tmp_file"
+}
+
 main() {
   parse_args "$@"
 
@@ -174,6 +270,13 @@ main() {
   local REPO_HOST_ROOT
   REPO_HOST_ROOT="$(repo_host_root_path)"
   mkdir -p "$STAGING_ROOT" "$REPO_HOST_ROOT"
+
+  RUN_TIMESTAMP="$(date +'%Y-%m-%d %H:%M:%S %Z')"
+  SRC_EFFECTIVE_TYPES=()
+  SRC_EFFECTIVE_STRIPS=()
+  SRC_EFFECTIVE_DEST_BASE=()
+  SRC_EFFECTIVE_TARGET_RELS=()
+  APP_CHANGED_FLAGS=()
 
   local staging_changed=0
 
@@ -242,8 +345,10 @@ main() {
     [[ -z "$dest" ]] && dest="apps/$app"
     dest="${dest%/}"
     APP_DESTS[$i]="$dest"
+    APP_CHANGED_FLAGS[$i]=0
     if [[ -n "$dest" && "$dest" != "." ]]; then
       NEW_MANAGED_DIRS["$dest"]=1
+      NEW_MANAGED_FILES["$dest/README.md"]=1
     fi
   done
 
@@ -285,19 +390,23 @@ main() {
       fi
     fi
 
+    local target_rel=""
     if [[ "$effective_type" == "dir" ]]; then
-      local target_rel
       target_rel="$(compute_dir_target_rel "$src" "$effective_strip" "$dest_base")"
       if [[ -n "$target_rel" ]]; then
         NEW_MANAGED_DIRS["$target_rel"]=1
       fi
     elif [[ "$effective_type" == "file" ]]; then
-      local target_rel
       target_rel="$(compute_file_target_rel "$src" "$effective_strip" "$dest_base")"
       if [[ -n "$target_rel" ]]; then
         NEW_MANAGED_FILES["$target_rel"]=1
       fi
     fi
+
+    SRC_EFFECTIVE_TYPES[$s]="$effective_type"
+    SRC_EFFECTIVE_STRIPS[$s]="$effective_strip"
+    SRC_EFFECTIVE_DEST_BASE[$s]="$dest_base"
+    SRC_EFFECTIVE_TARGET_RELS[$s]="$target_rel"
   done
 
   PATH_DEST_RELS=()
@@ -414,6 +523,7 @@ main() {
             fi
             if [[ -n "$rsync_out" ]]; then
               staging_changed=1
+              APP_CHANGED_FLAGS[$i]=1
               log "DIR: $src -> $display (cambios)"
               while IFS= read -r line; do log "    $line"; done <<<"$rsync_out"
             else
@@ -433,6 +543,7 @@ main() {
             else
               install -D -m 0644 "$src" "$tgt"
               staging_changed=1
+              APP_CHANGED_FLAGS[$i]=1
               log "FILE: $src -> $display (actualizado)"
             fi
           else
@@ -443,6 +554,12 @@ main() {
         fi
       fi
     done
+
+    write_app_readme "$i" "$app" "$dest" "$staged_app_root" "${APP_CHANGED_FLAGS[$i]:-0}" "$RUN_TIMESTAMP"
+    if (( __README_UPDATED )); then
+      staging_changed=1
+      APP_CHANGED_FLAGS[$i]=1
+    fi
   done
 
   if (( ${#EFFECTIVE_PATHS[@]} )); then
