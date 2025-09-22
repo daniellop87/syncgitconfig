@@ -11,7 +11,7 @@ repo_path: __REPO_PATH__        # Ruta local donde se clona el repo
 remote_url: __REMOTE_URL__      # URL remota del repo (HTTPS/SSH)
 env: __ENV__                    # Entorno (prod, pre, dev, test)
 host: __HOST__                  # Hostname (o "auto" para autodetectar)
-repo_layout: hierarchical       # hierarchical (por defecto) | flat (escribe en la raíz del repo)
+repo_layout: hierarchical       # hierarchical (env/apps, por defecto) | hierarchical_host (legado) | flat
 cooldown_seconds: __COOLDOWN__  # Intervalo en segundos entre syncs
 # staging_path: /var/lib/syncgitconfig/staging  # Opcional: staging personalizado
 

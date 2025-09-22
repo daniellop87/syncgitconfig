@@ -54,8 +54,8 @@ Staging y commit:
 
 ```
 (origenes /etc/... )
-   → /var/lib/syncgitconfig/staging/<host>/apps/<app>/… 
-   → /opt/configs-host/envs/<env>/hosts/<host>/apps/<app>/…
+   → /var/lib/syncgitconfig/staging/<env>/apps/<app>/…
+   → /opt/configs-host/envs/<env>/apps/<app>/…
    → git add / commit / push (HTTPS o SSH según `auth.method`)
 ```
 
@@ -104,7 +104,7 @@ repo_path: /opt/configs-host
 remote_url: https://gitea.example.local/ORG/configs-host.git
 env: prod
 host: auto
-repo_layout: hierarchical     # o "flat" para escribir en la raíz del repo
+repo_layout: hierarchical     # hierarchical (env/apps, por defecto) | hierarchical_host (legado) | flat
 staging_path: /var/lib/syncgitconfig/staging
 cooldown_seconds: 60
 
@@ -159,7 +159,7 @@ exclude:
 #         strip_prefix: "/etc/systemd/system"
 ```
 
-* `repo_layout` define si el árbol se crea bajo `envs/<env>/hosts/<host>` (`hierarchical`, por defecto) o directamente en la raíz del repo (`flat`).
+* `repo_layout` define si el árbol se crea bajo `envs/<env>/…` (`hierarchical`, por defecto), conserva el nivel `hosts/<host>` (`hierarchical_host`) o escribe directamente en la raíz del repo (`flat`).
 * `environments.<env>.hosts.<host>.apps.<app>.paths` agrupa rutas bajo `apps/<app>` y acepta entradas simples o mapas `src`/`dest` para personalizar el destino relativo al repositorio.
 * `watch_paths` indica qué rutas vigilar; si no se define se derivan de `paths`/`apps`. Con `repo_layout: flat` y rutas declaradas en `apps` se ignora automáticamente.
 * `paths` crea snapshots planos bajo `paths/` (modo legacy sencillo) y admite directorios o archivos individuales.
@@ -215,15 +215,13 @@ Checkout local (ej.: `/opt/configs-host`):
 ├─ .git/
 └─ envs/
    └─ prod/
-      └─ hosts/
-         └─ <host-fqdn>/
-            └─ apps/
-               ├─ systemd/…      # desde /etc/systemd/system
-               ├─ ssh/…          # desde /etc/ssh o archivos sueltos
-               └─ monitoring/…   # desde /etc/nagios
+      └─ apps/
+         ├─ systemd/…      # desde /etc/systemd/system
+         ├─ ssh/…          # desde /etc/ssh o archivos sueltos
+         └─ monitoring/…   # desde /etc/nagios
 ```
 
-> Con `repo_layout: flat` los archivos se almacenan directamente bajo la raíz del repositorio (p. ej. `apps/…`, `paths/…`) sin los niveles `envs/<env>/hosts/<host>`.
+> Con `repo_layout: hierarchical_host` se conserva el nivel `hosts/<host>`. Con `repo_layout: flat` los archivos se almacenan directamente bajo la raíz del repositorio (p. ej. `apps/…`, `paths/…`).
 
 ---
 

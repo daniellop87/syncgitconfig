@@ -74,11 +74,34 @@ ensure_app_entry() {
 }
 
 repo_host_root_path() {
-  if [[ "$CFG_repo_layout" == "flat" ]]; then
-    printf '%s\n' "$CFG_repo_path"
-  else
-    printf '%s\n' "$CFG_repo_path/envs/$CFG_env/hosts/$CFG_host"
-  fi
+  case "$CFG_repo_layout" in
+    flat)
+      printf '%s\n' "$CFG_repo_path"
+      ;;
+    hierarchical)
+      printf '%s\n' "$CFG_repo_path/envs/$CFG_env"
+      ;;
+    hierarchical_host)
+      printf '%s\n' "$CFG_repo_path/envs/$CFG_env/hosts/$CFG_host"
+      ;;
+    *)
+      printf '%s\n' "$CFG_repo_path/envs/$CFG_env"
+      ;;
+  esac
+}
+
+staging_root_path() {
+  case "$CFG_repo_layout" in
+    flat|hierarchical_host)
+      printf '%s\n' "$CFG_staging_path/$CFG_host"
+      ;;
+    hierarchical)
+      printf '%s\n' "$CFG_staging_path/$CFG_env"
+      ;;
+    *)
+      printf '%s\n' "$CFG_staging_path/$CFG_env"
+      ;;
+  esac
 }
 
 build_command_string() {
@@ -525,11 +548,14 @@ load_config_yaml() {
 
   local layout_lc="${CFG_repo_layout,,}"
   case "$layout_lc" in
-    ""|hierarchical|default|env_host|nested)
+    ""|hierarchical|env|environment|env_only)
       CFG_repo_layout="hierarchical"
       ;;
     flat|root)
       CFG_repo_layout="flat"
+      ;;
+    hierarchical_host|env_host|host|default|nested|legacy)
+      CFG_repo_layout="hierarchical_host"
       ;;
     *)
       warn "repo_layout desconocido '$CFG_repo_layout'; usando 'hierarchical'."
