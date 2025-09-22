@@ -96,6 +96,62 @@ path_dest_from_source() {
   fi
 }
 
+normalize_rel_path() {
+  local path="$1"
+  [[ -z "$path" ]] && { echo ""; return; }
+  while [[ "$path" == ./* ]]; do
+    path="${path#./}"
+  done
+  while [[ "$path" == /* ]]; do
+    path="${path#/}"
+  done
+  while [[ -n "$path" && "$path" != "/" && "$path" == */ ]]; do
+    path="${path%/}"
+  done
+  [[ "$path" == "." || "$path" == "/" ]] && path=""
+  echo "$path"
+}
+
+compute_dir_target_rel() {
+  local src="$1" strip="$2" dest_base="$3"
+  local rel="/"
+  if [[ -n "$strip" && "$src" == "$strip"* ]]; then
+    rel="${src#"$strip"}"
+    [[ "$rel" == "/" ]] && rel=""
+  fi
+  local trimmed="${rel#/}"
+  local base="${dest_base%/}"
+  local result=""
+  if [[ "$base" == "." || -z "$base" ]]; then
+    result="$trimmed"
+  else
+    if [[ -n "$trimmed" ]]; then
+      result="$base/$trimmed"
+    else
+      result="$base"
+    fi
+  fi
+  normalize_rel_path "$result"
+}
+
+compute_file_target_rel() {
+  local src="$1" strip="$2" dest_base="$3"
+  local rel="${src#"$strip"}"
+  rel="${rel#/}"
+  local base="${dest_base%/}"
+  local result=""
+  if [[ "$base" == "." || -z "$base" ]]; then
+    result="$rel"
+  else
+    if [[ -n "$rel" ]]; then
+      result="$base/$rel"
+    else
+      result="$base/$(basename "$src")"
+    fi
+  fi
+  normalize_rel_path "$result"
+}
+
 main() {
   parse_args "$@"
 
@@ -112,16 +168,13 @@ main() {
   REPO_HOST_ROOT="$(repo_host_root_path)"
   mkdir -p "$STAGING_ROOT" "$REPO_HOST_ROOT"
 
-  if (( ${#APP_NAMES[@]} > 0 )); then
-    rm -rf "$STAGING_ROOT/paths"
-  fi
-
   local staging_changed=0
 
   RSYNC_FLAGS=(-a --delete --itemize-changes)
   read -r -a EXCL <<<"$(rsync_exclude_flags)"
 
   local -a EFFECTIVE_PATHS=()
+  local -a PATH_DEST_RELS=()
   if (( ${#APP_NAMES[@]} == 0 )); then
     EFFECTIVE_PATHS=("${PATHS[@]}")
   fi
@@ -171,6 +224,126 @@ main() {
   fi
 
   mkdir -p "$STAGING_ROOT"
+
+  local managed_state_file="$STAGING_ROOT/.managed_paths"
+  declare -A NEW_MANAGED_DIRS=()
+  declare -A NEW_MANAGED_FILES=()
+
+  for ((i=0; i<${#APP_NAMES[@]}; i++)); do
+    local app="${APP_NAMES[$i]}"
+    local dest="${APP_DESTS[$i]}"
+    [[ -z "$dest" ]] && dest="apps/$app"
+    dest="${dest%/}"
+    APP_DESTS[$i]="$dest"
+    if [[ -n "$dest" && "$dest" != "." ]]; then
+      NEW_MANAGED_DIRS["$dest"]=1
+    fi
+  done
+
+  for ((s=0; s<${#SRC_APPIDX[@]}; s++)); do
+    local idx="${SRC_APPIDX[$s]}"
+    local src="${SRC_PATHS[$s]}"
+    local typ="${SRC_TYPES[$s]}"
+    local strip="${SRC_STRIPS[$s]}"
+    local dest_override="${SRC_DESTS[$s]}"
+    local dest_base="${APP_DESTS[$idx]}"
+    if [[ -n "$dest_override" ]]; then
+      if [[ "$dest_override" == "." ]]; then
+        dest_base="."
+      else
+        dest_base="${dest_override%/}"
+      fi
+    fi
+    if [[ -n "$dest_base" && "$dest_base" != "." ]]; then
+      NEW_MANAGED_DIRS["$dest_base"]=1
+    fi
+
+    local effective_type="$typ"
+    local effective_strip="$strip"
+    if [[ "$effective_type" == "auto" || -z "$effective_type" ]]; then
+      if [[ -d "$src" ]]; then
+        effective_type="dir"
+        [[ -n "$effective_strip" ]] || effective_strip="$src"
+      elif [[ -f "$src" ]]; then
+        effective_type="file"
+        [[ -n "$effective_strip" ]] || effective_strip="$(dirname "$src")"
+      else
+        effective_type="unknown"
+      fi
+    else
+      if [[ "$effective_type" == "dir" && -z "$effective_strip" ]]; then
+        effective_strip="$src"
+      elif [[ "$effective_type" == "file" && -z "$effective_strip" ]]; then
+        effective_strip="$(dirname "$src")"
+      fi
+    fi
+
+    if [[ "$effective_type" == "dir" ]]; then
+      local target_rel
+      target_rel="$(compute_dir_target_rel "$src" "$effective_strip" "$dest_base")"
+      if [[ -n "$target_rel" ]]; then
+        NEW_MANAGED_DIRS["$target_rel"]=1
+      fi
+    elif [[ "$effective_type" == "file" ]]; then
+      local target_rel
+      target_rel="$(compute_file_target_rel "$src" "$effective_strip" "$dest_base")"
+      if [[ -n "$target_rel" ]]; then
+        NEW_MANAGED_FILES["$target_rel"]=1
+      fi
+    fi
+  done
+
+  PATH_DEST_RELS=()
+  if (( ${#EFFECTIVE_PATHS[@]} )); then
+    for ((p=0; p<${#EFFECTIVE_PATHS[@]}; p++)); do
+      local src_path="${EFFECTIVE_PATHS[$p]}"
+      local dest_rel
+      dest_rel="$(normalize_rel_path "$(path_dest_from_source "$src_path")")"
+      PATH_DEST_RELS[$p]="$dest_rel"
+      [[ -z "$dest_rel" ]] && continue
+      if [[ -d "$src_path" ]]; then
+        NEW_MANAGED_DIRS["$dest_rel"]=1
+      elif [[ -f "$src_path" ]]; then
+        NEW_MANAGED_FILES["$dest_rel"]=1
+      else
+        NEW_MANAGED_DIRS["$dest_rel"]=1
+      fi
+    done
+  fi
+
+  declare -A OLD_MANAGED_DIRS=()
+  declare -A OLD_MANAGED_FILES=()
+  if [[ -f "$managed_state_file" ]]; then
+    while IFS=$'\t' read -r kind path; do
+      [[ -z "$kind" || -z "$path" ]] && continue
+      if [[ "$kind" == "D" ]]; then
+        OLD_MANAGED_DIRS["$path"]=1
+      elif [[ "$kind" == "F" ]]; then
+        OLD_MANAGED_FILES["$path"]=1
+      fi
+    done <"$managed_state_file"
+  fi
+
+  for path in "${!OLD_MANAGED_DIRS[@]}"; do
+    if [[ -z "${NEW_MANAGED_DIRS[$path]:-}" ]]; then
+      local target="$STAGING_ROOT/$path"
+      if [[ -e "$target" || -L "$target" ]]; then
+        log "[INFO] Eliminando directorio obsoleto de staging: $path"
+        rm -rf "$target"
+        staging_changed=1
+      fi
+    fi
+  done
+  for path in "${!OLD_MANAGED_FILES[@]}"; do
+    if [[ -z "${NEW_MANAGED_FILES[$path]:-}" ]]; then
+      local target="$STAGING_ROOT/$path"
+      if [[ -e "$target" || -L "$target" ]]; then
+        log "[INFO] Eliminando fichero obsoleto de staging: $path"
+        rm -f "$target"
+        staging_changed=1
+      fi
+    fi
+  done
 
   for ((i=0; i<${#APP_NAMES[@]}; i++)); do
     local app="${APP_NAMES[$i]}" dest="${APP_DESTS[$i]}"
@@ -267,14 +440,15 @@ main() {
 
   if (( ${#EFFECTIVE_PATHS[@]} )); then
     declare -A seen_paths=()
-    for src in "${EFFECTIVE_PATHS[@]}"; do
+    for ((p=0; p<${#EFFECTIVE_PATHS[@]}; p++)); do
+      local src="${EFFECTIVE_PATHS[$p]}"
       [[ -z "$src" ]] && continue
       if [[ -n "${seen_paths[$src]:-}" ]]; then
         continue
       fi
       seen_paths[$src]=1
-      local dest_rel
-      dest_rel="$(path_dest_from_source "$src")"
+      local dest_rel="${PATH_DEST_RELS[$p]}"
+      [[ -n "$dest_rel" ]] || dest_rel="$(normalize_rel_path "$(path_dest_from_source "$src")")"
       local display="$dest_rel"
 
       if [[ -d "$src" ]]; then
@@ -313,6 +487,24 @@ main() {
         warn "Ruta en paths/watch_paths no existe: $src"
       fi
     done
+  fi
+
+  if (( ${#NEW_MANAGED_DIRS[@]} || ${#NEW_MANAGED_FILES[@]} )); then
+    local tmp_manifest
+    tmp_manifest="${managed_state_file}.tmp"
+    {
+      for dir in "${!NEW_MANAGED_DIRS[@]}"; do
+        [[ -z "$dir" ]] && continue
+        printf 'D\t%s\n' "$dir"
+      done
+      for file in "${!NEW_MANAGED_FILES[@]}"; do
+        [[ -z "$file" ]] && continue
+        printf 'F\t%s\n' "$file"
+      done
+    } | sort >"$tmp_manifest"
+    mv "$tmp_manifest" "$managed_state_file"
+  else
+    rm -f "$managed_state_file"
   fi
 
   log "Sync STAGING -> REPO"
