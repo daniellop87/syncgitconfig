@@ -164,6 +164,112 @@ compute_file_target_rel() {
   normalize_rel_path "$result"
 }
 
+app_content_summary_block() {
+  local root="$1"
+
+  if [[ ! -d "$root" ]]; then
+    echo "_Sin contenido sincronizado._"
+    return
+  fi
+
+  local files_count dirs_count size_display
+
+  files_count=$(find "$root" -mindepth 1 -type f \
+    ! -path '*/.git/*' 2>/dev/null | wc -l | awk '{print $1}')
+  dirs_count=$(find "$root" -mindepth 1 -type d \
+    ! -path '*/.git/*' ! -name '.git' 2>/dev/null | wc -l | awk '{print $1}')
+
+  files_count="${files_count//[[:space:]]/}"
+  dirs_count="${dirs_count//[[:space:]]/}"
+
+  size_display=$(du -sh "$root" 2>/dev/null | awk 'NR==1 {print $1}')
+  if [[ -z "$size_display" ]]; then
+    size_display=$(du -sk "$root" 2>/dev/null | awk 'NR==1 {printf "%sK", $1}')
+  fi
+  [[ -z "$size_display" ]] && size_display="0"
+
+  printf '* Archivos: %s\n' "${files_count:-0}"
+  printf '* Directorios: %s\n' "${dirs_count:-0}"
+  printf '* Tamaño aproximado: %s\n' "$size_display"
+}
+
+generate_tree_preview() {
+  local root="$1" max_depth="${2:-3}" limit="${3:-200}"
+
+  [[ -d "$root" ]] || { echo ""; return; }
+
+  if command -v python3 >/dev/null 2>&1; then
+    python3 - "$root" "$max_depth" "$limit" <<'PY'
+import os, sys
+
+root = sys.argv[1]
+max_depth = int(sys.argv[2])
+limit = max(1, int(sys.argv[3]))
+
+lines = ["."]
+count = 0
+truncated = False
+exclude_names = {".git"}
+
+def walk(path, depth, prefix):
+    global count, truncated
+    try:
+        entries = sorted(os.listdir(path))
+    except OSError:
+        return
+    entries = [name for name in entries if name not in exclude_names]
+    total = len(entries)
+    for idx, name in enumerate(entries):
+        full = os.path.join(path, name)
+        connector = "└── " if idx == total - 1 else "├── "
+        is_dir = os.path.isdir(full)
+        lines.append(prefix + connector + name + ("/" if is_dir else ""))
+        count += 1
+        if count >= limit:
+            truncated = True
+            return
+        if is_dir and depth + 1 < max_depth:
+            extension = "    " if idx == total - 1 else "│   "
+            walk(full, depth + 1, prefix + extension)
+            if truncated:
+                return
+
+walk(root, 0, "")
+if truncated:
+    lines.append("… (listado truncado)")
+
+print("\n".join(lines))
+PY
+    return
+  fi
+
+  local -a lines=(".")
+  local count=0
+
+  while IFS= read -r -d '' entry; do
+    local rel="${entry#"$root"/}"
+    [[ -z "$rel" ]] && continue
+    local path_no_slash="${rel%/}"
+    IFS='/' read -r -a parts <<<"$path_no_slash"
+    local depth=$(( ${#parts[@]} - 1 ))
+    (( depth < 0 )) && depth=0
+    local indent=""
+    local i
+    for ((i=0; i<depth; i++)); do
+      indent+="  "
+    done
+    local name="${parts[${#parts[@]}-1]}"
+    if [[ -d "$entry" ]]; then
+      name+="/"
+    fi
+    lines+=("$indent- $name")
+    (( ++count >= limit )) && { lines+=("… (listado truncado)"); break; }
+  done < <(find "$root" -mindepth 1 -maxdepth "$max_depth" \
+    \( -path "$root/.git" -o -path "$root/.git/*" -o -path '*/.git' -o -path '*/.git/*' \) -prune -o -print0 2>/dev/null | sort -z)
+
+  printf '%s\n' "${lines[@]}"
+}
+
 write_app_readme() {
   local app_idx="$1" app_name="$2" dest="$3" staged_app_root="$4" app_changed="$5" timestamp="$6"
 
@@ -242,6 +348,22 @@ write_app_readme() {
     if (( ! found_source )); then
       printf '_Sin rutas declaradas._\n'
     fi
+
+    printf '\n## Resumen del contenido\n\n'
+    app_content_summary_block "$staged_app_root"
+    printf '\n'
+
+    printf '## Estructura (primeros 3 niveles)\n\n'
+    local tree_preview
+    tree_preview="$(generate_tree_preview "$staged_app_root" 3 200)"
+    if [[ -n "$tree_preview" ]]; then
+      printf '```\n'
+      printf '%s\n' "$tree_preview"
+      printf '```\n'
+    else
+      printf '_Sin contenido para mostrar._\n'
+    fi
+    printf '\n'
   } >"$tmp_file"
 
   if [[ ! -f "$readme_path" ]] || ! cmp -s "$tmp_file" "$readme_path"; then

@@ -159,6 +159,22 @@ configure_git_auth_environment() {
       ;;
   esac
 
+  local helper_file="${AUTH_token_file:-}"
+  if [[ "$helper_file" == ~* ]]; then
+    helper_file="${helper_file/#\~/$HOME}"
+  fi
+
+  if [[ "$AUTH_effective_method" == "https_token" && -n "$helper_file" ]]; then
+    local cfg_param="credential.helper=store --file=$helper_file"
+    local existing_cfg_params="${AUTH_GIT_ENV_MAP["GIT_CONFIG_PARAMETERS"]:-}"
+    if [[ -n "$existing_cfg_params" ]]; then
+      existing_cfg_params+=$'\n'"$cfg_param"
+    else
+      existing_cfg_params="$cfg_param"
+    fi
+    AUTH_GIT_ENV_MAP["GIT_CONFIG_PARAMETERS"]="$existing_cfg_params"
+  fi
+
   if [[ "$AUTH_effective_method" == "https_netrc" ]]; then
     local netrc_raw="${AUTH_netrc_file:-$HOME/.netrc}"
     local netrc="$netrc_raw"
@@ -326,6 +342,8 @@ ensure_https_token_credentials() {
     remote_masked="$(redact_remote_url "$url")"
     ok "Credenciales HTTPS actualizadas en $cred_file para $remote_masked"
   fi
+
+  configure_git_auth_environment
 }
 
 run_git() {

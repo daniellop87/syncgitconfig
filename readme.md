@@ -6,7 +6,7 @@ Backup **granular** de configuraciones por **servidor** usando **Git** (HTTPS co
 * **Modelo por app**: agrupas rutas como “apps” (systemd, ssh, monitoring, …) declaradas por entorno/host.
 * **Seguro**: excluyes secretos; token con permisos mínimos; sin `.git` en `/etc`.
 * **Automático**: watcher + cooldown (60 s) para evitar tormentas de commits.
-* **Documentado**: cada app genera un `README.md` con sus orígenes y la fecha de la última sincronización.
+* **Documentado**: cada app genera un `README.md` con sus orígenes, resumen de contenidos y árbol (3 niveles) actualizado tras cada sincronización.
 
 ---
 
@@ -242,6 +242,24 @@ Ejemplo de `README.md` autogenerado dentro de `apps/systemd/`:
   - Tipo efectivo: dir
   - Strip aplicado: `(auto)`
   - Destino relativo: `apps/systemd`
+
+## Resumen del contenido
+
+* Archivos: 12
+* Directorios: 4
+* Tamaño aproximado: 36K
+
+## Estructura (primeros 3 niveles)
+
+```
+.
+├── README.md
+├── timers/
+│   └── nightly-backup.timer
+└── units/
+    ├── api.service
+    └── worker.service
+```
 ```
 
 > La fecha mostrada se actualiza en cada pasada que detecta cambios en la aplicación.
