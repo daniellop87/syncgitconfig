@@ -228,7 +228,7 @@ write_app_readme() {
           fi
         fi
         local declared_dest="${SRC_DESTS[$idx]}"
-        printf '- `%s`\n' "$src"
+        printf -- '- `%s`\n' "$src"
         printf '  - Tipo efectivo: %s\n' "$typ"
         printf '  - Strip aplicado: %s\n' "$strip_display"
         printf '  - Destino relativo: %s\n' "$target_display"
