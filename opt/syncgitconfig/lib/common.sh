@@ -845,13 +845,13 @@ git_commit_and_push() {
     path="${status_line:3}"
     case "$code" in
       '!!')
-        ((ignored_count++))
+        ((++ignored_count))
         if (( ${#ignored_preview[@]} < 10 )); then
           ignored_preview+=("$path")
         fi
         ;;
       '??')
-        ((untracked_count++))
+        ((++untracked_count))
         if (( ${#untracked_preview[@]} < 10 )); then
           untracked_preview+=("$path")
         fi

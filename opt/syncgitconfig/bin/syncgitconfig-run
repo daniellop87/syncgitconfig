@@ -645,7 +645,7 @@ main() {
     local -a changed_preview=()
     for ((i=0; i<${#APP_NAMES[@]}; i++)); do
       if (( ${APP_CHANGED_FLAGS[$i]:-0} )); then
-        ((changed_total++))
+        ((++changed_total))
         if (( ${#changed_preview[@]} < 3 )); then
           local slug
           slug="$(slugify_app_tag "${APP_NAMES[$i]}")"
