@@ -149,6 +149,32 @@ build_command_string() {
   echo "$out"
 }
 
+_git_auth_env_add_config() {
+  local key="$1" value="$2"
+
+  local count_str=""
+  if [[ -n "${AUTH_GIT_ENV_MAP["GIT_CONFIG_COUNT"]:-}" ]]; then
+    count_str="${AUTH_GIT_ENV_MAP["GIT_CONFIG_COUNT"]}"
+  elif [[ -n "${GIT_CONFIG_COUNT:-}" ]]; then
+    count_str="$GIT_CONFIG_COUNT"
+  else
+    count_str=0
+  fi
+
+  if [[ ! "$count_str" =~ ^[0-9]+$ ]]; then
+    count_str=0
+  fi
+
+  local count
+  count=$((count_str))
+
+  local key_var="GIT_CONFIG_KEY_$count"
+  local value_var="GIT_CONFIG_VALUE_$count"
+  AUTH_GIT_ENV_MAP["$key_var"]="$key"
+  AUTH_GIT_ENV_MAP["$value_var"]="$value"
+  AUTH_GIT_ENV_MAP["GIT_CONFIG_COUNT"]=$((count + 1))
+}
+
 configure_git_auth_environment() {
   AUTH_GIT_ENV_MAP=()
   AUTH_GIT_ENVS=()
@@ -165,14 +191,7 @@ configure_git_auth_environment() {
   fi
 
   if [[ "$AUTH_effective_method" == "https_token" && -n "$helper_file" ]]; then
-    local cfg_param="credential.helper=store --file=$helper_file"
-    local existing_cfg_params="${AUTH_GIT_ENV_MAP["GIT_CONFIG_PARAMETERS"]:-}"
-    if [[ -n "$existing_cfg_params" ]]; then
-      existing_cfg_params+=$'\n'"$cfg_param"
-    else
-      existing_cfg_params="$cfg_param"
-    fi
-    AUTH_GIT_ENV_MAP["GIT_CONFIG_PARAMETERS"]="$existing_cfg_params"
+    _git_auth_env_add_config "credential.helper" "store --file=$helper_file"
   fi
 
   if [[ "$AUTH_effective_method" == "https_netrc" ]]; then
