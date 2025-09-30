@@ -258,15 +258,16 @@ sed -i "s|__COOLDOWN__|${COOLDOWN}|g"    "$YAML_PATH"
 
 log "[ OK ] YAML actualizado en ${YAML_PATH}"
 
-### ========= Credenciales Git (si HTTPS + token + user) =========
-if [[ -n "${TOKEN:-}" && -n "${USER_NAME:-}" && "$REMOTE_URL" =~ ^https:// ]]; then
+### ========= Credenciales Git (si HTTP(S) + token + user) =========
+if [[ -n "${TOKEN:-}" && -n "${USER_NAME:-}" && "$REMOTE_URL" =~ ^https?:// ]]; then
+  SCHEME="${REMOTE_URL%%://*}"
   GIT_CREDS_PATH="$CREDENTIALS_DIR/.git-credentials"
-  echo "https://${USER_NAME}:${TOKEN}@${REMOTE_URL#https://}" > "$GIT_CREDS_PATH"
+  echo "${SCHEME}://${USER_NAME}:${TOKEN}@${REMOTE_URL#${SCHEME}://}" > "$GIT_CREDS_PATH"
   git config --global credential.helper "store --file=$GIT_CREDS_PATH"
   chmod 600 "$GIT_CREDS_PATH"
   log "[ OK ] Token guardado en $GIT_CREDS_PATH"
 else
-  log "[INFO] No se configuraron credenciales (faltan --token/--user o URL no HTTPS)."
+  log "[INFO] No se configuraron credenciales (faltan --token/--user o URL no HTTP/S)."
 fi
 
 ### ========= Clonado del repo =========
